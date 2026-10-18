@@ -1,0 +1,119 @@
+@media (max-width: 1200px) {
+  .page-content { padding-inline: 24px; }
+  .app-header { padding-inline: 24px; }
+  .app-header-top-menu { gap: 12px; }
+  .top-menu.ant-menu-horizontal > .ant-menu-item { padding-inline: 9px; }
+  .editor-layout { grid-template-columns: minmax(0, 1.3fr) minmax(235px, .7fr); }
+}
+
+@media (max-width: 991px) {
+  .app-sider { width: 64px !important; min-width: 64px !important; max-width: 64px !important; }
+  .brand { justify-content: center; padding: 0; }
+  .brand-copy, .sider-section-label, .sider-bottom, .side-menu .ant-menu-title-content { display: none; }
+  .side-menu { padding-inline: 9px; }
+  .side-menu .ant-menu-item { justify-content: center; padding-inline: 0 !important; }
+  .side-menu .ant-menu-item .anticon { margin: 0; font-size: 17px; }
+  .main-layout { margin-left: 64px; }
+}
+
+@media (max-width: 760px) {
+  .app-sider { position: fixed !important; z-index: 25; inset: auto 0 0; width: 100% !important; min-width: 100% !important; max-width: 100% !important; height: 63px; border-top: 1px solid #e8ece7; border-right: 0; }
+  .brand, .sider-section-label, .sider-bottom { display: none; }
+  .side-menu { display: flex; height: 62px; align-items: center; justify-content: space-around; padding: 0 4px; }
+  .side-menu .ant-menu-item { display: flex; width: 25%; height: 52px; flex-direction: column; justify-content: center; gap: 2px; margin: 0; line-height: 1; }
+  .side-menu .ant-menu-item .anticon { font-size: 15px; }
+  .side-menu .ant-menu-title-content { display: block; margin: 0 !important; font-size: 8px; }
+  .main-layout { margin-left: 0; padding-bottom: 63px; }
+  .app-header { height: 55px; padding-inline: 16px; }
+  .app-header-brand { display: flex; }
+  .app-header-top-menu { gap: 8px; }
+  .app-header-brand .brand-copy span { display: none; }
+  .app-header-brand .brand-copy strong { font-size: 10px; }
+  .app-header-brand .brand-mark { width: 30px; height: 30px; }
+  .top-menu.ant-menu-horizontal { line-height: 53px; }
+  .top-menu.ant-menu-horizontal > .ant-menu-item { height: 38px; gap: 4px; padding-inline: 7px; font-size: 10px; }
+  .app-header-top-menu .header-right { gap: 2px; }
+  .header-date { display: none; }
+  .page-content { padding: 16px 14px 28px; }
+  .article-reader-modal { max-width: 96vw; margin: 2vh auto; }
+  .article-reader-modal .ant-modal-content { height: 92dvh; }
+  .article-reading-stage { padding: 8px; }
+  .wechat-reading-page, .zhihu-reading-page { padding: 22px 19px 18px; }
+  .wechat-reading-page h1, .zhihu-reading-page h1 { font-size: 21px; }
+  .rich-text, .zhihu-article-rich-text { font-size: 14px; }
+  .xhs-plan-fields { grid-template-columns: minmax(0,1fr); }
+  .xhs-card-plan-heading { align-items: flex-start; flex-direction: column; }
+  .welcome-banner { min-height: 0; align-items: flex-start; flex-direction: column; justify-content: center; gap: 16px; padding: 22px; }
+  .welcome-banner h2 { max-width: 100%; font-size: 19px !important; }
+  .banner-art { width: 160px; opacity: .45; }
+  .sun { width: 57px; height: 57px; }
+  .metric-card { min-height: 0; }
+  .metric-card .ant-card-body { padding: 12px; }
+  .metric-card .ant-statistic-content { font-size: 22px; }
+  .metric-card .ant-statistic { gap: 7px; }
+  .metric-icon { width: 29px; height: 29px; font-size: 13px; }
+  .metric-hint { font-size: 8px; }
+  .page-heading { align-items: flex-start; flex-direction: column; }
+  .page-heading h2 { font-size: 19px !important; }
+  .page-heading > .ant-space { width: 100%; }
+  .page-heading > .ant-space .ant-btn { flex: 1; padding-inline: 8px; font-size: 10px; }
+  .product-page-heading { align-items: center; flex-direction: row; }
+  .product-page-heading > div:first-child { flex: 1; }
+  .product-page-heading > .ant-btn { flex: none; }
+  .table-toolbar { align-items: flex-start; flex-direction: column; padding: 15px; }
+  .table-toolbar .ant-space { width: 100%; }
+  .customer-search { width: 100%; }
+  .source-select { width: 125px; }
+  .customer-table-card .ant-table { overflow-x: auto; }
+  .editor-layout { grid-template-columns: 1fr; }
+  .editor-topline h3 { font-size: 15px !important; }
+  .draft-toolbar { align-items: flex-start; flex-direction: column; }
+  .editor-footer { align-items: flex-start; flex-direction: column; }
+  .editor-footer > .ant-space { width: 100%; }
+  .editor-footer > .ant-space .ant-btn { flex: 1; }
+  .generation-strip { align-items: stretch; flex-direction: column; gap: 12px; }
+  .generation-actions { display: grid; width: 100%; grid-template-columns: 1fr 1.35fr; }
+  .generation-actions .ant-btn { width: 100%; padding-inline: 8px; white-space: normal; }
+  .image-preview-modal .ant-modal-content { height: 92dvh; }
+  .image-preview-modal .ant-modal-body { padding: 8px; }
+  .image-preview-footer { flex-wrap: wrap; justify-content: center; }
+  .image-preview-filename { display: none; }
+  .reminder-grid { gap: 6px; }
+  .reminder-grid > div { padding: 8px; }
+  .reminder-grid .ant-typography { font-size: 8px; }
+  .reminder-grid strong { font-size: 15px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+
+@media (max-width: 540px) {
+  .source-chart-layout { gap: 15px; }
+  .source-donut { width: 200px; max-width: min(62vw,200px); }
+  .source-donut-center strong { font-size: 22px; }
+  .source-legend { grid-template-columns: repeat(auto-fit,minmax(135px,1fr)); gap: 7px; }
+  .source-legend-row { gap: 5px; padding: 7px 8px; font-size: 9px; }
+}
+
+@media (max-width: 991px) {
+  .app-sider.is-collapsed .sider-bottom { display: none; }
+  .main-layout.is-collapsed { margin-left: 64px; }
+}
+
+@media (max-width: 760px) {
+  .main-layout.is-collapsed { margin-left: 0; }
+  .sider-collapse-toggle { display: none; }
+  .follow-up-task-row, .profile-task-card { align-items: flex-start; flex-direction: column; }
+  .follow-up-task-row > .ant-space, .profile-task-card > .ant-space { align-self: flex-end; }
+}
+
+@media (max-width: 900px) {
+  .service-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .service-filter-row, .service-date-grid { grid-template-columns: 1fr; }
+  .service-contact-row, .service-detail-heading { align-items: flex-start; flex-direction: column; }
+  .service-contact-row > .ant-space { align-self: flex-end; }
+}

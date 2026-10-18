@@ -1,0 +1,42 @@
+{
+  "name": "insurance-advisor-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:api": "node --env-file-if-exists=.env backend/start.js backend/main.js",
+    "dev:skill-runner": "node --env-file-if-exists=.env backend/start.js backend/skill-runner.js",
+    "dev:all": "node --env-file-if-exists=.env backend/dev.js",
+    "dev:stack": "npm run dev:all",
+    "start:api": "node --env-file-if-exists=.env backend/start.js backend/main.js",
+    "start:skill-runner": "node --env-file-if-exists=.env backend/start.js backend/skill-runner.js",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:api": "node --test backend/test/*.test.js",
+    "test:product-center": "node --test backend/test/product-center-*.test.js backend/test/product-document-parser.test.js",
+    "test:ui-logic": "node --test src/*.test.js",
+    "test": "npm run test:api && npm run test:ui-logic"
+  },
+  "dependencies": {
+    "@ant-design/icons": "6.3.4",
+    "@nestjs/common": "^11.2.7",
+    "@nestjs/core": "^11.2.7",
+    "@nestjs/platform-express": "^11.2.7",
+    "@relation-graph/react": "^3.1.2",
+    "antd": "6.6.6",
+    "mammoth": "^1.13.0",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.23.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "6.1.2",
+    "tailwindcss": "^4.3.3",
+    "vite": "8.3.4"
+  }
+}

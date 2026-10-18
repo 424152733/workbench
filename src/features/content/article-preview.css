@@ -1,0 +1,159 @@
+.platform-article-preview { position: relative; min-height: 100%; color: #202124; background: #fff; }
+
+.article-platform-toolbar { position: sticky; z-index: 2; top: 0; display: flex; height: 42px; align-items: center; justify-content: space-between; padding: 0 17px; border-bottom: 1px solid #f0f1f1; color: #61666b; background: #fff; font-size: 13px; }
+
+.toolbar-back { color: #70777e; font-size: 27px; line-height: 1; }
+
+.toolbar-more { color: #525960; font-size: 19px; letter-spacing: 2px; }
+
+.wechat-reading-page { max-width: 700px; min-height: 480px; padding: 32px 42px 24px; margin: 0 auto; background: #fff; }
+
+.platform-preview-label, .zhihu-topic-label { color: #7b858c; font-size: 12px; }
+
+.wechat-reading-page h1 { margin: 8px 0 18px; color: #1f2428; font-size: 24px; font-weight: 700; line-height: 1.45; letter-spacing: -.3px; text-wrap: pretty; }
+
+.wechat-preview-byline, .zhihu-preview-byline { display: flex; align-items: center; gap: 10px; min-width: 0; margin-bottom: 22px; color: #586168; font-size: 13px; }
+
+.preview-avatar { display: grid; width: 34px; height: 34px; flex: none; place-items: center; border-radius: 50%; color: #fff; background: #287866; font-size: 17px; font-weight: 700; }
+
+.wechat-preview-byline > span:nth-child(2), .zhihu-preview-byline > span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+
+.wechat-preview-byline strong, .zhihu-preview-byline strong { color: #287866; font-size: 13px; font-weight: 500; }
+
+.wechat-preview-byline small, .zhihu-preview-byline small { color: #929ba0; font-size: 11px; }
+
+.preview-meta-muted { margin-left: auto; color: #a0a7ab; font-size: 11px; }
+
+.wechat-preview-summary { padding: 12px 14px; margin: 0 0 23px; border-left: 3px solid #71a18b; color: #6c7772; background: #f5f8f5; font-size: 14px; line-height: 1.8; }
+
+.wechat-reading-preview.theme-warm .wechat-reading-page h1 { color: #5b4635; }
+
+.wechat-reading-preview.theme-warm .wechat-preview-summary { border-left-color: #bf8156; color: #6c5946; background: #faf4ec; }
+
+.wechat-reading-preview.theme-warm .rich-text { color: #51463c; }
+
+.wechat-reading-preview.theme-editorial .wechat-reading-page h1 { color: #263b55; }
+
+.wechat-reading-preview.theme-editorial .wechat-preview-summary { border-left-color: #557da8; color: #718096; background: #f4f7fa; }
+
+.wechat-reading-preview.theme-editorial .rich-text { color: #334155; }
+
+.wechat-reading-preview.theme-warm .wechat-reader-actions { color: #8c7965; }
+
+.wechat-reading-preview.theme-editorial .wechat-reader-actions { color: #718096; }
+
+.rich-text { color: #354047; font-size: 15px; line-height: 1.9; overflow-wrap: anywhere; }
+
+.rich-text > :first-child { margin-top: 0; }
+
+.rich-text > :last-child { margin-bottom: 0; }
+
+.rich-text p { margin: 0 0 17px; }
+
+.rich-text h1, .rich-text h2, .rich-text h3, .rich-text h4 { margin: 25px 0 12px; color: #29353b; font-weight: 650; line-height: 1.5; }
+
+.rich-text h1 { font-size: 22px; }
+
+.rich-text h2 { font-size: 20px; }
+
+.rich-text h3 { font-size: 17px; }
+
+.rich-text h4 { font-size: 15px; }
+
+.rich-text strong { color: #273b33; font-weight: 700; }
+
+.rich-text em { color: #56675d; }
+
+.rich-text a { color: #287866; text-decoration: none; }
+
+.rich-text a:hover { text-decoration: underline; }
+
+.rich-text code { padding: 2px 5px; border-radius: 4px; color: #a04d42; background: #f7f1ee; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+
+.rich-text-code { overflow: auto; padding: 14px 16px; border-radius: 9px; color: #e8efeb; background: #26342d; font-size: 13px; line-height: 1.7; }
+
+.rich-text-code code { padding: 0; color: inherit; background: transparent; }
+
+.rich-text blockquote { padding: 4px 0 4px 15px; margin: 16px 0; border-left: 3px solid #80a68d; color: #69756e; }
+
+.rich-text blockquote p { margin: 0; }
+
+.rich-text-list { padding-left: 1.6em; margin: 0 0 18px; }
+
+.rich-text-list li { padding-left: 3px; margin: 5px 0; }
+
+.rich-text-step { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 10px !important; font-weight: 650; }
+
+.rich-text-step-marker { color: #287866; font-size: 1.02em; line-height: inherit; }
+
+.rich-text hr { height: 1px; margin: 22px 0; border: 0; background: #e9eeea; }
+
+.rich-text-table-wrap { overflow-x: auto; margin: 16px 0 20px; }
+
+.rich-text table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.65; }
+
+.rich-text th, .rich-text td { min-width: 90px; padding: 9px 11px; border: 1px solid #e3e9e4; text-align: left; vertical-align: top; }
+
+.rich-text th { color: #394a40; background: #f3f7f3; font-weight: 650; }
+
+.rich-text-image-placeholder { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px dashed #ccd6ce; border-radius: 5px; color: #85938a; background: #f7f9f7; font-size: 12px; }
+
+.rich-text-empty { color: #96a09a; }
+
+.article-source-note { padding: 13px 15px; margin-top: 22px; border-radius: 8px; color: #5f6c63; background: #f5f7f5; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+
+.article-source-note p { margin: 5px 0 0; white-space: pre-wrap; }
+
+.article-disclaimer { padding-top: 14px; margin-top: 22px; border-top: 1px solid #edf0ed; color: #89938d; font-size: 12px; line-height: 1.7; }
+
+.wechat-reader-actions, .zhihu-reader-actions { display: flex; flex-wrap: wrap; gap: 20px; padding: 16px 0 4px; margin-top: 18px; border-top: 1px solid #eff1ef; color: #7b8580; font-size: 12px; }
+
+.zhihu-preview-toolbar { position: sticky; z-index: 2; top: 0; display: flex; height: 48px; align-items: center; gap: 11px; padding: 0 24px; border-bottom: 1px solid #edf0f2; color: #4a5054; background: #fff; }
+
+.zhihu-preview-toolbar strong { color: #1685d5; font-size: 17px; }
+
+.zhihu-preview-toolbar > span:nth-of-type(2) { color: #8a9298; font-size: 12px; }
+
+.zhihu-preview-toolbar .toolbar-more { margin-left: auto; }
+
+.zhihu-wordmark { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 6px; color: #fff; background: #1685d5; font-size: 16px; font-weight: 700; }
+
+.zhihu-reading-page { max-width: 840px; min-height: 480px; padding: 30px 46px 22px; margin: 0 auto; background: #fff; }
+
+.zhihu-topic-label { margin-bottom: 9px; color: #6d8aa1; }
+
+.zhihu-reading-page h1 { margin: 0 0 18px; color: #17191b; font-size: 26px; font-weight: 700; line-height: 1.45; }
+
+.zhihu-preview-byline { margin-bottom: 24px; }
+
+.zhihu-preview-byline .preview-avatar { color: #fff; background: #438fcb; }
+
+.zhihu-preview-byline strong { color: #3f474d; }
+
+.zhihu-follow-label { padding: 5px 14px; margin-left: auto; border: 1px solid #1787d5; border-radius: 99px; color: #1787d5; font-size: 12px; }
+
+.zhihu-article-rich-text { color: #262b2e; font-size: 16px; line-height: 1.85; }
+
+.zhihu-article-rich-text h1, .zhihu-article-rich-text h2, .zhihu-article-rich-text h3, .zhihu-article-rich-text h4 { color: #17191b; }
+
+.zhihu-article-rich-text strong { color: #1f2529; }
+
+.zhihu-reader-actions { align-items: center; }
+
+.article-preview-fade { position: absolute; z-index: 1; right: 0; bottom: 0; left: 0; height: 74px; background: linear-gradient(transparent,#fff 88%); pointer-events: none; }
+
+.article-reader-modal .ant-modal-content { display: flex; height: min(90dvh, 940px); flex-direction: column; }
+
+.article-reader-modal .ant-modal-header { flex: none; }
+
+.article-reader-modal .ant-modal-body { min-height: 0; flex: 1; padding: 0; overflow: hidden; background: #f1f3f2; }
+
+.article-reading-stage { height: 100%; padding: 20px; overflow: auto; }
+
+.article-reading-stage > .platform-article-preview { max-width: 840px; min-height: 100%; margin: 0 auto; border: 1px solid #e8ece9; border-radius: 10px; box-shadow: 0 8px 24px #1e302315; }
+
+.article-reading-stage .wechat-reading-page, .article-reading-stage .zhihu-reading-page { min-height: auto; }
+
+.article-reading-stage .wechat-reading-page { max-width: 700px; }
+
+.article-reading-stage .zhihu-reading-page { max-width: 840px; }
