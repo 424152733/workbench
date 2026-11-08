@@ -261,3 +261,18 @@
 :root[data-theme="dark"] .service-policy-warning { color: #dda96a; }
 
 :root[data-theme="dark"] .service-description { color: #c6d3c9; }
+
+:root[data-theme="dark"] .ant-alert .ant-alert-message { color: #dce8df !important; }
+:root[data-theme="dark"] .ant-alert .ant-alert-description { color: #b8c8bd !important; }
+:root[data-theme="dark"] .ant-alert.ant-alert-info { border-color: #385747 !important; background: #1c2c24 !important; }
+:root[data-theme="dark"] .ant-alert-info .ant-alert-icon { color: #88c6a3 !important; }
+:root[data-theme="dark"] .ant-alert-info .ant-alert-message { color: #dce8df !important; }
+:root[data-theme="dark"] .ant-alert.ant-alert-success { border-color: #365744 !important; background: #1d2d24 !important; }
+:root[data-theme="dark"] .ant-alert-success .ant-alert-icon { color: #8fc9a7 !important; }
+:root[data-theme="dark"] .ant-alert-success .ant-alert-message { color: #d5e8da !important; }
+:root[data-theme="dark"] .ant-alert.ant-alert-warning { border-color: #665330 !important; background: #30291d !important; }
+:root[data-theme="dark"] .ant-alert-warning .ant-alert-icon { color: #e2bd72 !important; }
+:root[data-theme="dark"] .ant-alert-warning .ant-alert-message { color: #efddb5 !important; }
+:root[data-theme="dark"] .ant-alert.ant-alert-error { border-color: #69443e !important; background: #322320 !important; }
+:root[data-theme="dark"] .ant-alert-error .ant-alert-icon { color: #e39787 !important; }
+:root[data-theme="dark"] .ant-alert-error .ant-alert-message { color: #f1cec7 !important; }

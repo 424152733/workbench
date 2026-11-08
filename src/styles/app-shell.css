@@ -28,7 +28,9 @@
 
 .sider-bottom { position: absolute; right: 13px; bottom: 19px; left: 13px; }
 
-.sider-bottom .ant-btn { font-size: 12px; }
+.sider-bottom .sider-preferences-button.ant-btn { display: flex; width: 40px; height: 40px; align-items: center; justify-content: center; padding: 0; margin: 0; }
+
+.sider-bottom .sider-preferences-button .anticon { font-size: 15px; }
 
 .main-layout { min-height: 100vh; margin-left: 234px; background: #f6f7f5 !important; }
 
@@ -113,7 +115,5 @@
 
 .app-sider.is-collapsed .sider-bottom { right: 10px; left: 10px; }
 
-.app-sider.is-collapsed .sider-bottom .ant-btn { display: flex; width: 42px; justify-content: center; padding-inline: 0; margin: auto; }
-
-.app-sider.is-collapsed .sider-bottom .ant-btn > span:not(.anticon) { display: none; }
+.app-sider.is-collapsed .sider-bottom .sider-preferences-button.ant-btn { margin-inline: auto; }
 

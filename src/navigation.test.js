@@ -38,3 +38,11 @@ test('publication history view restores from the address bar',() => {
   assert.equal(parseWorkbenchLocation({pathname:'/content',search:'?view=publications'}).view,'publications');
   assert.equal(parseWorkbenchLocation({pathname:'/content',search:''}).view,'workspace');
 });
+
+test('content category and selected topic restore from the address bar',() => {
+  assert.deepEqual(parseWorkbenchLocation({pathname:'/content',search:'?type=product_explainer&topicId=PX-42'}),{
+    page:'content',customerId:null,familyId:null,returnFamilyId:null,view:'workspace',contentTypeCode:'product_explainer',topicId:'PX-42',productId:null,
+  });
+  assert.equal(parseWorkbenchLocation({pathname:'/content',search:'?type=unknown'}).contentTypeCode,'insurance_education');
+  assert.equal(parseWorkbenchLocation({pathname:'/content',search:'?type=product_explainer&productId=12'}).productId,12);
+});

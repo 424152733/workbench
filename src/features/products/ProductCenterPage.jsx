@@ -25,6 +25,7 @@ import {
   CheckCircleOutlined,
   CopyOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   FileTextOutlined,
   HistoryOutlined,
@@ -37,12 +38,15 @@ import {
 import { ArticlePlatformPreview } from '../../article-preview.jsx';
 import { XhsPlatformPreview } from '../content/XhsPlatformPreview.jsx';
 import { useProductCenterWorkspace } from './useProductCenterWorkspace.js';
+import { ProductSyncPanel } from './ProductSyncPanel.jsx';
 
 const { Title, Text, Paragraph } = Typography;
 const DOCUMENT_TYPES = [
   { value: 'policy_terms', label: '保险条款' },
   { value: 'product_brief', label: '产品说明' },
   { value: 'brochure', label: '宣传资料' },
+  { value: 'rate_table', label: '费率表' },
+  { value: 'cash_value', label: '现金价值表' },
   { value: 'other', label: '其他资料' },
 ];
 const PLATFORMS = ['知乎', '小红书', '公众号'];
@@ -50,6 +54,13 @@ const DISCLAIMER =
   '本文根据已核对的产品资料整理，仅供产品介绍参考，不构成投保建议。具体保障责任、适用条件及除外责任以保险合同和保险公司正式资料为准。';
 const COPY_DISCLAIMER =
   '产品介绍仅供参考，不构成投保建议；具体保障责任和适用条件以保险合同及保险公司正式资料为准。';
+function ProductInterpretationWorkspace({workspace,go}) {
+  const topics = workspace.contentTopics || [];
+  return <Card className="product-panel" title="产品解读" extra={<Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => go('content',{type:'product_explainer',productId:workspace.product.id})}>在内容工作台新建</Button>}>
+    <Alert className="product-copy-basis" type="info" showIcon message="产品资料在这里维护；跨平台选题、稿件、图卡、审核和发布记录统一在内容工作台管理。" />
+    {topics.length ? <div className="product-interpretation-list">{topics.map((topic) => <div className="product-interpretation-item" key={topic.id}><div><Text strong>{topic.title}</Text><Text type="secondary">{topic.platforms.join(' · ')}</Text></div><Space><Tag>{topic.status}</Tag><Button size="small" type="link" onClick={() => go('content',{type:'product_explainer',topicId:topic.id})}>打开稿件</Button></Space></div>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有关联的产品解读" />}
+  </Card>;
+}
 const formatBytes = (size) =>
   size >= 1024 * 1024
     ? `${(size / 1024 / 1024).toFixed(1)} MB`
@@ -57,6 +68,11 @@ const formatBytes = (size) =>
 const formatProductDate = (value) => {
   const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
   return match ? `${match[1]}/${match[2]}/${match[3]}` : value || '未填写';
+};
+const extractionSourcesLabel = (extraction) => {
+  const sources = extraction?.sourceDocuments || [];
+  if (sources.length > 1) return `${sources.length} 份资料 · ${sources[0].fileName || '产品资料'}等`;
+  return extraction?.documentName || sources[0]?.fileName || '产品资料';
 };
 
 function ProductModal({ open, product, meta, onCancel, onSubmit, loading }) {
@@ -160,7 +176,7 @@ function DocumentPanel({
   uploadDocument,
   deleteDocument,
   downloadDocument,
-  analyzeDocument,
+  analyzeMaterials,
   updateExtraction,
   confirmExtraction,
   apiLoading,
@@ -168,12 +184,15 @@ function DocumentPanel({
   const [documentType, setDocumentType] = useState('product_brief');
   const active = workspace.documents.find((doc) => doc.id === activeDocumentId);
   const relatedExtractions = active
-    ? workspace.extractions.filter((item) => item.documentId === active.id)
+    ? workspace.extractions.filter((item) => item.documentId === active.id || item.sourceDocuments?.some((source) => source.id === active.id))
     : [];
   const relatedDrafts = workspace.drafts.filter((draft) =>
     relatedExtractions.some((item) => item.id === draft.extractionId),
   );
   const busy = Boolean(apiLoading['product-center:upload']);
+  const unreadyDocuments = workspace.documents.filter((doc) =>
+    !['parsed','needs_review'].includes(doc.parseStatus) || Number(doc.extractedCharCount || 0) < 40,
+  );
   return (
     <div className="product-document-grid">
       <Card
@@ -261,6 +280,7 @@ function DocumentPanel({
                       (item) => item.value === active.documentType,
                     )?.label || '其他资料',
                 },
+                {key:'acquired-at',label:'取得时间',children:active.createdAt ? new Date(active.createdAt).toLocaleString('zh-CN',{hour12:false}) : '未知'},
                 {
                   key: 'length',
                   label: '提取文字',
@@ -273,6 +293,10 @@ function DocumentPanel({
                     ? `${active.pageCount} 页`
                     : '未标页',
                 },
+                ...(active.sourceType==='official_sync' ? [
+                  {key:'official-source',label:'官网来源',children:<a href={active.sourceUrl} target="_blank" rel="noreferrer">打开原始 PDF</a>},
+                  {key:'official-hash',label:'SHA-256',children:<Text code copyable>{active.sourceSha256 || '未生成'}</Text>},
+                ] : []),
               ]}
             />
             {active.parseError ? (
@@ -284,16 +308,12 @@ function DocumentPanel({
                 type="primary"
                 icon={<ReloadOutlined />}
                 loading={Boolean(
-                  apiLoading[`product-center:analyze:${active.id}`],
+                  apiLoading[`product-center:analyze:${workspace.product.id}`],
                 )}
-                disabled={
-                  (active.parseStatus !== 'parsed' &&
-                    active.parseStatus !== 'needs_review') ||
-                  active.extractedCharCount < 40
-                }
-                onClick={() => analyzeDocument(active.id)}
+                disabled={!workspace.documents.length || unreadyDocuments.length > 0}
+                onClick={analyzeMaterials}
               >
-                GPT 提取要点
+                汇总提取全部资料
               </Button>
               <Button
                 size="small"
@@ -332,13 +352,24 @@ function DocumentPanel({
                 </Button>
               </Popconfirm>
             </Space>
+            <Text type="secondary" className="product-source-summary-hint">
+              将本产品的 {workspace.documents.length} 份资料一起整理为一组要点，每条要点保留文件和页码来源；资料冲突会列入待核实。
+            </Text>
+            {unreadyDocuments.length ? (
+              <Alert
+                className="product-source-summary-warning"
+                type="warning"
+                showIcon
+                message={`先完成全部资料解析：${unreadyDocuments.map((doc) => doc.fileName).join('、')}`}
+              />
+            ) : null}
           </div>
         ) : null}
         <Alert
           className="product-no-image-alert"
           type="info"
           showIcon
-          message="资料解析在本机完成。点击“GPT 提取要点”后才会调用已配置的文本模型；本模块不会调用付费生图服务。"
+          message="资料解析在本机完成。点击“汇总提取全部资料”后会调用 DeepSeek 一次性整理本产品的全部资料；本模块不会调用付费生图服务。"
         />
       </Card>
       <FactsPanel
@@ -411,7 +442,7 @@ function FactsPanel({
           value={extraction.id}
           options={extractionChoices.map((item) => ({
             value: item.id,
-            label: `${item.documentName || '产品资料'} · ${new Date(item.createdAt).toLocaleDateString('zh-CN')}`,
+            label: `${extractionSourcesLabel(item)} · ${new Date(item.createdAt).toLocaleDateString('zh-CN')}`,
           }))}
           onChange={setActiveId}
         />
@@ -842,7 +873,7 @@ function CopyWorkspace({
             value={extraction?.id}
             options={confirmedExtractions.map((item) => ({
               value: item.id,
-              label: `${item.documentName || '产品资料'} · ${new Date(item.confirmedAt || item.createdAt).toLocaleDateString('zh-CN')}`,
+              label: `${extractionSourcesLabel(item)} · ${new Date(item.confirmedAt || item.createdAt).toLocaleDateString('zh-CN')}`,
             }))}
             onChange={setExtractionId}
           />
@@ -852,7 +883,7 @@ function CopyWorkspace({
             className="product-copy-basis"
             type="info"
             showIcon
-            message={`依据已确认的产品资料：${extraction.documentName || '产品资料'}`}
+            message={`依据已确认的产品资料：${extractionSourcesLabel(extraction)}`}
           />
         ) : null}
         {!extraction ? (
@@ -1058,7 +1089,7 @@ function CopyWorkspace({
                 platform={platform}
                 draft={previewDraft}
                 topicTitle={workspace.product.productName}
-                brandName="新华保险产品解读"
+                brandName={`${workspace.product.company}产品解读`}
                 brandSubtitle="产品资料整理 · 人工核对后发布"
                 zhihuAuthor="保险顾问 · 产品解读"
                 zhihuSubtitle="根据产品资料整理"
@@ -1086,6 +1117,7 @@ export function ProductCenterPage({
   apiLoading,
   performApiAction,
   copyText,
+  go,
 }) {
   const [messageApi, contextHolder] = message.useMessage();
   const workspaceState = useProductCenterWorkspace({
@@ -1107,8 +1139,9 @@ export function ProductCenterPage({
     updateProduct,
     deleteProduct,
     uploadDocument,
+    importOfficialMaterial,
     deleteDocument,
-    analyzeDocument,
+    analyzeMaterials,
     updateExtraction,
     confirmExtraction,
     generateDraft,
@@ -1123,16 +1156,18 @@ export function ProductCenterPage({
     setActiveDocumentId,
   } = workspaceState;
   const [search, setSearch] = useState('');
+  const [productFilter,setProductFilter] = useState('verified_on_sale');
   const [modalProduct, setModalProduct] = useState(undefined);
   const [modalOpen, setModalOpen] = useState(false);
   const visibleProducts = useMemo(
     () =>
       products.filter((product) =>
-        `${product.productName} ${product.shortName} ${product.insuranceType}`
+        (productFilter==='all' || product.officialSaleStatus===productFilter) &&
+        `${product.company} ${product.productName} ${product.shortName} ${product.insuranceType}`
           .toLowerCase()
           .includes(search.trim().toLowerCase()),
       ),
-    [products, search],
+    [products, search, productFilter],
   );
   const submitProduct = async (values) => {
     const saved = modalProduct
@@ -1141,6 +1176,7 @@ export function ProductCenterPage({
     if (saved) {
       setModalOpen(false);
       setModalProduct(undefined);
+      setProductFilter('all');
     }
   };
   const refreshIndex = () =>
@@ -1165,7 +1201,7 @@ export function ProductCenterPage({
         <div>
           <Title level={2}>产品中心</Title>
           <Text className="muted">
-            整理新华保险产品资料，核对产品事实，再生成知乎、小红书和公众号介绍。
+            同步各家保险公司官网在售产品，核对正式资料，再生成知乎、小红书和公众号介绍。
           </Text>
         </div>
         <Button
@@ -1190,6 +1226,8 @@ export function ProductCenterPage({
           }
         />
       ) : null}
+      <ProductSyncPanel companies={meta.companies} api={api} performApiAction={performApiAction}
+        apiLoading={apiLoading} onUpdated={refreshIndex} />
       <div className="product-center-summary">
         <Card>
           <Text>产品档案</Text>
@@ -1219,7 +1257,7 @@ export function ProductCenterPage({
       <div className="product-center-layout">
         <Card
           className="product-catalog product-panel"
-          title="新华保险产品档案"
+          title="产品档案"
           extra={
             <Button
               type="primary"
@@ -1234,13 +1272,15 @@ export function ProductCenterPage({
             </Button>
           }
         >
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="搜索产品名称或险种"
-          />
+          <div className="product-catalog-toolbar">
+            <Input allowClear prefix={<SearchOutlined />} value={search}
+              onChange={(event) => setSearch(event.target.value)} placeholder="搜索公司、产品名称或险种" />
+            <Select aria-label="产品状态" value={productFilter} onChange={setProductFilter} options={[
+              {value:'verified_on_sale',label:'官网核验在售'},
+              {value:'review_required',label:'状态待复核'},
+              {value:'all',label:'全部档案'},
+            ]} />
+          </div>
           <div className="product-catalog-list">
             {visibleProducts.length ? (
               visibleProducts.map((product) => (
@@ -1256,11 +1296,10 @@ export function ProductCenterPage({
                     <Tag>{product.insuranceType}</Tag>
                   </span>
                   <small>
-                    {product.productVersion || '未填写版本'} ·{' '}
-                    {product.documentCount} 份资料
+                    {product.company} · {product.sourceType==='official_sync'?'官网同步':'手动档案'}{product.officialProductCode ? ` · ${product.officialProductCode}` : ''} · {product.documentCount} 份资料
                   </small>
                   <span className="product-catalog-counts">
-                    <span>{product.pendingExtractionCount} 组待核对</span>
+                    <span>{product.officialSaleStatus==='verified_on_sale'?'官网已核验在售':product.officialSaleStatus==='review_required'?'官网状态待复核':'未核验官网状态'}</span>
                     <span>{product.pendingDraftCount} 篇待审</span>
                   </span>
                 </button>
@@ -1268,7 +1307,7 @@ export function ProductCenterPage({
             ) : (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={search ? '没有符合条件的产品' : '还没有产品档案'}
+                description={search ? '没有符合条件的产品' : productFilter==='verified_on_sale' ? '暂无官网核验在售产品，可先同步保险公司目录' : '还没有符合条件的产品档案'}
               />
             )}
           </div>
@@ -1292,7 +1331,7 @@ export function ProductCenterPage({
               </>
             ) : (
               <>
-                <Empty description="创建一个新华保险产品档案，开始整理产品资料" />
+                <Empty description="创建手动档案，或从官网同步在售产品" />
                 <Button
                   type="primary"
                   icon={<PlusOutlined />}
@@ -1312,7 +1351,7 @@ export function ProductCenterPage({
               <div className="product-profile-heading">
                 <div>
                   <Text className="eyebrow">
-                    新华保险 · {workspace.product.insuranceType}
+                    {workspace.product.company} · {workspace.product.insuranceType}
                   </Text>
                   <Title level={3}>{workspace.product.productName}</Title>
                   <Text type="secondary">
@@ -1334,6 +1373,9 @@ export function ProductCenterPage({
                   >
                     {workspace.product.status}
                   </Tag>
+                  {workspace.product.sourceType==='official_sync' ? <Tag color={workspace.product.officialSaleStatus==='verified_on_sale'?'green':workspace.product.officialSaleStatus==='review_required'?'orange':'default'}>
+                    {workspace.product.officialSaleStatus==='verified_on_sale'?'官网已核验在售':workspace.product.officialSaleStatus==='review_required'?'官网状态待复核':'官网状态未核验'}
+                  </Tag> : <Tag>手动档案</Tag>}
                   <Button
                     size="small"
                     icon={<EditOutlined />}
@@ -1346,7 +1388,7 @@ export function ProductCenterPage({
                   </Button>
                   <Popconfirm
                     title="删除该产品档案？"
-                    description={`将同时删除 ${workspace.documents.length} 份资料、${workspace.extractions.length} 组产品要点和 ${workspace.drafts.length} 篇文案及其历史版本。`}
+                    description={`将同时删除 ${workspace.documents.length} 份资料、${workspace.extractions.length} 组产品要点和 ${workspace.drafts.length} 篇旧文案。已有内容工作台引用时，系统会阻止删除。`}
                     okText="删除"
                     cancelText="取消"
                     cancelButtonProps={{ color: 'danger', variant: 'outlined' }}
@@ -1396,8 +1438,11 @@ export function ProductCenterPage({
                   {
                     key: 'documents',
                     label: '产品资料',
-                    children: `${workspace.documents.length} 份`,
+                    children: `${workspace.documents.length} 份本地资料 · ${workspace.officialMaterials?.filter((item)=>item.isCurrent).length || 0} 个官网链接`,
                   },
+                  ...(workspace.product.sourceType==='official_sync' ? [{
+                    key:'official-code',label:'官网产品代码',children:workspace.product.officialProductCode || '官网未提供',
+                  }] : []),
                   {
                     key: 'note',
                     label: '备注',
@@ -1405,6 +1450,21 @@ export function ProductCenterPage({
                   },
                 ]}
               />
+              {workspace.product.sourceType==='official_sync' ? <div className="product-official-source">
+                <div className="product-official-source-heading">
+                  <Text strong>官网来源与资料</Text>
+                  <Text type="secondary">最近核验：{workspace.product.lastVerifiedAt ? new Date(workspace.product.lastVerifiedAt).toLocaleString('zh-CN',{hour12:false}) : '暂无'}</Text>
+                </div>
+                <Space wrap size={[8,6]}>
+                  <Button size="small" type="link" href={workspace.product.saleStatusEvidenceUrl} target="_blank" rel="noreferrer">查看在售依据</Button>
+                  {(workspace.officialMaterials || []).filter((item)=>item.isCurrent).map((item)=><Space key={item.id} size={2}>
+                    <Button size="small" type="link" href={item.sourceUrl} target="_blank" rel="noreferrer">查看{item.label}</Button>
+                    <Button size="small" icon={<DownloadOutlined />} loading={Boolean(apiLoading[`product-center:official-import:${item.id}`])}
+                      onClick={()=>importOfficialMaterial(item.id)}>导入</Button>
+                  </Space>)}
+                </Space>
+                <Text type="secondary">官网在售状态不代表代理渠道或所在地区可售；正式责任与费率以保险公司资料为准。</Text>
+              </div> : null}
             </Card>
             <Tabs
               className="product-workspace-tabs"
@@ -1420,7 +1480,7 @@ export function ProductCenterPage({
                       uploadDocument={uploadDocument}
                       deleteDocument={deleteDocument}
                       downloadDocument={downloadDocument}
-                      analyzeDocument={analyzeDocument}
+                      analyzeMaterials={analyzeMaterials}
                       updateExtraction={updateExtraction}
                       confirmExtraction={confirmExtraction}
                       apiLoading={apiLoading}
@@ -1429,22 +1489,9 @@ export function ProductCenterPage({
                 },
                 {
                   key: 'copy',
-                  label: '平台文案',
+                    label: '产品解读',
                   children: (
-                    <CopyWorkspace
-                      workspace={workspace}
-                      platform={platform}
-                      setPlatform={setPlatform}
-                      platformSettings={platformSettings}
-                      apiLoading={apiLoading}
-                      generateDraft={generateDraft}
-                      saveDraft={saveDraft}
-                      approveDraft={approveDraft}
-                      copyText={copyText}
-                      updatePlatformSettings={updatePlatformSettings}
-                      loadDraftVersions={loadDraftVersions}
-                      restoreDraftVersion={restoreDraftVersion}
-                    />
+                    <ProductInterpretationWorkspace workspace={workspace} go={go} />
                   ),
                 },
               ]}

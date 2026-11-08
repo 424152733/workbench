@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS policies (
   insured_name TEXT,
   premium TEXT,
   coverage_summary TEXT,
+  basic_sum_insured JSONB,
   verified BOOLEAN NOT NULL DEFAULT FALSE,
   service_scope TEXT NOT NULL DEFAULT 'external',
   expiry_date DATE,

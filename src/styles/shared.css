@@ -123,3 +123,21 @@
 .image-preview-footer .ant-btn { height: 34px; }
 
 .image-preview-filename { min-width: 0; overflow: hidden; color: #7e8b81; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Keep Ant Design alerts calm, readable, and consistent across the workbench. */
+.ant-alert { border-radius: 10px; padding: 12px 14px; }
+.ant-alert .ant-alert-message { color: #34483d !important; font-size: 13px; font-weight: 600; line-height: 1.5; }
+.ant-alert .ant-alert-description { color: #617168 !important; font-size: 12px; line-height: 1.65; }
+.ant-alert .ant-alert-icon { margin-top: 2px; }
+.ant-alert.ant-alert-info { border-color: #d8e7dc !important; background: #f1f7f3 !important; }
+.ant-alert-info .ant-alert-icon { color: #367b63 !important; }
+.ant-alert-info .ant-alert-message { color: #34483d !important; }
+.ant-alert.ant-alert-success { border-color: #d6e8dc !important; background: #f0f7f2 !important; }
+.ant-alert-success .ant-alert-icon { color: #39886b !important; }
+.ant-alert-success .ant-alert-message { color: #365b46 !important; }
+.ant-alert.ant-alert-warning { border-color: #ecdfbf !important; background: #fff9ed !important; }
+.ant-alert-warning .ant-alert-icon { color: #a77927 !important; }
+.ant-alert-warning .ant-alert-message { color: #6c5429 !important; }
+.ant-alert.ant-alert-error { border-color: #efd8d2 !important; background: #fff5f2 !important; }
+.ant-alert-error .ant-alert-icon { color: #b45e50 !important; }
+.ant-alert-error .ant-alert-message { color: #743f37 !important; }

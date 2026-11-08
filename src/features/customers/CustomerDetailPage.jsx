@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Avatar, Alert, Breadcrumb, Button, Card, Descriptions, Divider, Empty, Form, Input, Modal, Select, Space, Spin, Tag, Typography } from 'antd';
+import { Avatar, Alert, Breadcrumb, Button, Card, Collapse, Descriptions, Divider, Empty, Form, Input, Modal, Select, Space, Spin, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, CalendarOutlined, EditOutlined, PlusOutlined, UserOutlined } from '@ant-design/icons';
 import { PolicyCard } from './PolicyCard.jsx';
 import { CustomerFamiliesPanel } from './CustomerFamiliesPanel.jsx';
+import { PolicyContractOrganizer } from './PolicyContractOrganizer.jsx';
+import { CoverageReviewPanel } from './CoverageReviewPanel.jsx';
 import { customerStageColors } from './customer-options.js';
 
 const {Title,Text} = Typography;
@@ -10,6 +12,7 @@ const {Title,Text} = Typography;
 export function CustomerDetailPage({customer,loading,returnFamilyId,onBack,onHome,onClients,onEdit,onPolicy,onFollowUp,onCompleteTask,onRescheduleTask,onCancelTask,onService,onVerify,serviceWorkspace,apiLoading,performApiAction,api,onError,onSuccess,onCustomerUpdated,onOpenFamily}) {
   const [acquisitionOpen,setAcquisitionOpen] = useState(false);
   const [acquisitionSources,setAcquisitionSources] = useState([]);
+  const [contractRevision,setContractRevision] = useState(0);
   const [acquisitionForm] = Form.useForm();
   const acquisitionActionKey = `customer:acquisition:${customer?.id}`;
   const sourceLoading = Boolean(apiLoading['customer:acquisition-sources']);
@@ -38,6 +41,14 @@ export function CustomerDetailPage({customer,loading,returnFamilyId,onBack,onHom
       setAcquisitionOpen(false);
       onSuccess('获客资料已确认，相关分析已按新资料重新统计');
     } catch (error) { onError(error); }
+  };
+
+  const deletePolicy = async (policy) => {
+    try {
+      const updated=await performApiAction(`policy:delete:${policy.id}`,()=>api.deletePolicy(customer.id,policy.id));
+      onCustomerUpdated?.(updated);
+      onSuccess('保单和保障检视记录已删除；原合同仍保留在合同整理中，可重新归档');
+    } catch(error) { onError(error); }
   };
 
   if (loading && !customer) return <div className="page-loading"><Spin /></div>;
@@ -92,12 +103,18 @@ export function CustomerDetailPage({customer,loading,returnFamilyId,onBack,onHom
     <CustomerFamiliesPanel customer={customer} api={api} apiLoading={apiLoading} performApiAction={performApiAction}
       onOpenFamily={onOpenFamily} onError={onError} onSuccess={onSuccess} />
 
-    <Card className="panel-card customer-detail-section" title={<div><Title level={4}>已有保单</Title><Text className="muted">客户档案下登记的保单；家庭归属需单独确认。</Text></div>} extra={<Button type="primary" icon={<PlusOutlined />} onClick={onPolicy}>新增保单</Button>}>
-      {customer.policies?.length ? customer.policies.map((policy)=><PolicyCard key={policy.id} policy={policy} apiLoading={apiLoading}
+    <CoverageReviewPanel customer={customer} api={api} apiLoading={apiLoading} performApiAction={performApiAction}
+      onError={onError} onSuccess={onSuccess} onFollowUp={onFollowUp} onCustomerUpdated={onCustomerUpdated} contractRevision={contractRevision} />
+
+    <PolicyContractOrganizer customer={customer} api={api} apiLoading={apiLoading} performApiAction={performApiAction}
+      onError={onError} onSuccess={onSuccess} onCustomerUpdated={onCustomerUpdated} onContractsChanged={()=>setContractRevision((revision)=>revision+1)} />
+
+    <Card className="panel-card customer-detail-section" title={<div><Title level={4}>保单档案</Title><Text className="muted">这里用于核对状态和维护保单；保障责任详情见上方保障检视。</Text></div>} extra={<Button type="primary" icon={<PlusOutlined />} onClick={onPolicy}>新增保单</Button>}>
+      {customer.policies?.length ? <Collapse className="customer-policy-management-collapse" items={[{key:'policies',label:<Space wrap><Text strong>管理已登记保单</Text><Text className="muted">{customer.policies.length} 份 · 展开后可核实、记录服务或删除</Text></Space>,children:<div className="customer-policy-management-list">{customer.policies.map((policy)=><PolicyCard key={policy.id} policy={policy} apiLoading={apiLoading}
         onVerify={(item)=>performApiAction(`policy:verify:${item.id}`,()=>onVerify(item))}
         onLifecycle={serviceWorkspace.openLifecycle}
         onCreateService={(item)=>serviceWorkspace.openCreateService(item,customer.id)}
-        onViewServices={onService} />) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂未录入保单" />}
+        onViewServices={onService} onDelete={deletePolicy} />)}</div>}]} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂未录入保单" />}
     </Card>
 
     <Card className="panel-card customer-detail-section" title={<Title level={4}>跟进与沟通</Title>}>

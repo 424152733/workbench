@@ -221,14 +221,14 @@ export function useCustomerWorkspaceActions({
     if (activeNav === 'clients' && clientView === 'services') await serviceWorkspace.loadServiceItems();
   };
 
-  const openFollowUpTaskModal = (customer = selectedClient,serviceItemId=null) => {
+  const openFollowUpTaskModal = (customer = selectedClient,serviceItemId=null,context=null) => {
     if (!customer) return;
     if (customer.contact === '已拒绝联系') { messageApi.warning('客户已拒绝联系，不能安排联系待办'); return; }
     setFollowUpTaskMode('create');
     setFollowUpTaskCustomerId(customer.id);
     setFollowUpTaskServiceItemId(serviceItemId);
     setActiveFollowUpTask(null);
-    followUpTaskForm.setFieldsValue({title:'跟进客户',method:customer.preferredContact || '电话',dueDate:null,dueTime:null,note:''});
+    followUpTaskForm.setFieldsValue({title:context?.title || '跟进客户',method:customer.preferredContact || '电话',dueDate:null,dueTime:null,note:context?.note || ''});
     setFollowUpTaskModalOpen(true);
   };
 

@@ -1,12 +1,14 @@
 import { BadRequestException, ConflictException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { readFile, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { cleanGeneratedCopy, runwareTextModel } from './content-generation-helpers.js';
+import { deepseekTextModel } from './deepseek-client.js';
 import { cleanText, pgDate, strictDate } from './workbench-primitives.js';
 import { PRODUCT_DOCUMENT_MAX_BYTES, PRODUCT_DOCUMENT_MAX_TEXT_CHARS, extractProductDocumentText } from './product-document-parser.js';
-import { buildProductAnalysisPrompt, buildProductCopyPrompt, normalizeProductAnalysis, normalizeProductCopy, productCopySources, PRODUCT_COPY_PLATFORMS } from './product-center-prompts.js';
+import { buildProductAnalysisPrompt, normalizeProductAnalysis, PRODUCT_COPY_PLATFORMS } from './product-center-prompts.js';
+import { isProductSyncUrlSafe } from './product-sync-adapters.js';
 
-export const PRODUCT_DOCUMENT_TYPES = Object.freeze(['policy_terms','product_brief','brochure','other']);
+export const PRODUCT_DOCUMENT_TYPES = Object.freeze(['policy_terms','product_brief','brochure','rate_table','cash_value','other']);
 export const PRODUCT_DOCUMENT_UPLOAD_DIR = path.resolve('backend/uploads/product-documents');
 const MAX_PRODUCT_NAME = 120;
 const MAX_PRODUCT_NOTE = 1200;
@@ -23,20 +25,38 @@ const publicProduct = (row) => ({
   id:Number(row.id),companyCode:row.company_code,company:row.company_label || row.company_name || '新华保险',
   insuranceTypeCode:row.insurance_type_code,insuranceType:row.insurance_type_label || row.insurance_type_name || '',
   productName:row.product_name,shortName:row.short_name || '',productVersion:row.product_version || '',
+  sourceType:row.source_type || 'manual',sourceProductKey:row.source_product_key || '',
+  officialProductCode:row.official_product_code || '',officialProductUrl:row.official_product_url || '',
+  officialSaleStatus:row.official_sale_status==='verified_on_sale' && row.last_verified_at &&
+    Date.now()-new Date(row.last_verified_at).getTime()>7*24*60*60*1000 ? 'review_required' : row.official_sale_status || 'unverified',
+  saleStatusEvidenceUrl:row.sale_status_evidence_url || '',
+  productScope:row.product_scope || 'unknown',lastVerifiedAt:row.last_verified_at || null,
   effectiveDate:row.effective_date ? pgDate(row.effective_date) : null,
-  status:row.status,note:row.note || '',tags:jsonValue(row.tags,[]),documentCount:Number(row.document_count || 0),
+  status:row.status,note:row.note || '',tags:jsonValue(row.tags,[]),documentCount:Number(row.document_count || 0)+Number(row.official_material_count || 0),
   pendingExtractionCount:Number(row.pending_extraction_count || 0),pendingDraftCount:Number(row.pending_draft_count || 0),
   createdAt:row.created_at,updatedAt:row.updated_at,
 });
 const publicDocument = (row) => ({
   id:Number(row.id),productId:Number(row.product_id),documentType:row.document_type,fileName:row.file_name,
+  sourceType:row.source_type || 'manual',sourceUrl:row.source_url || '',sourcePageUrl:row.source_page_url || '',sourceSha256:row.source_sha256 || '',
   mimeType:row.mime_type,byteSize:Number(row.byte_size),parseStatus:row.parse_status,parseError:row.parse_error || '',
   pageCount:row.page_count === null || row.page_count === undefined ? null : Number(row.page_count),
   extractedCharCount:Number(row.extracted_char_count || 0),warnings:jsonValue(row.warnings,[]),createdAt:row.created_at,
 });
+const publicOfficialMaterial = (row) => ({
+  id:Number(row.id),productId:Number(row.product_id),materialType:row.material_type,label:row.label,
+  sourceUrl:row.source_url,sourcePageUrl:row.source_page_url,isCurrent:Boolean(row.is_current),lastSeenAt:row.last_seen_at,
+});
 const publicExtraction = (row) => ({
   id:Number(row.id),productId:Number(row.product_id),documentId:Number(row.document_id),documentName:row.file_name || '',
   documentType:row.document_type || '',pageCount:row.page_count === null || row.page_count === undefined ? null : Number(row.page_count),
+  sourceDocuments:(() => {
+    const sources = parseJsonArray(row.source_documents);
+    return sources.length ? sources.map((item) => ({
+      id:Number(item.id),fileName:String(item.fileName || ''),documentType:String(item.documentType || ''),
+      pageCount:item.pageCount === null || item.pageCount === undefined ? null : Number(item.pageCount),
+    })) : [{id:Number(row.document_id),fileName:row.file_name || '',documentType:row.document_type || '',pageCount:row.page_count === null || row.page_count === undefined ? null : Number(row.page_count)}];
+  })(),
   positioning:row.positioning || '',facts:jsonValue(row.facts,[]),openQuestions:jsonValue(row.open_questions,[]),
   status:row.status,provider:row.provider,confirmedAt:row.confirmed_at,createdAt:row.created_at,updatedAt:row.updated_at,
 });
@@ -81,30 +101,51 @@ export class ProductCenterOperations {
 
   async productCenterMeta() {
     const [companies,insuranceTypes] = await Promise.all([
-      this.db.query('SELECT code,label FROM product_company_dictionary WHERE is_active=TRUE ORDER BY sort_order,label'),
+      this.db.query(`SELECT c.code,c.label,c.sync_supported,c.sync_enabled,c.sync_coverage,
+        latest.id AS latest_run_id,latest.status AS latest_run_status,latest.finished_at AS latest_run_finished_at,
+        latest.discovered_count AS latest_run_discovered_count,latest.error_count AS latest_run_error_count
+        FROM product_company_dictionary c
+        LEFT JOIN LATERAL (SELECT id,status,finished_at,discovered_count,error_count FROM product_sync_runs r
+          WHERE r.company_code=c.code ORDER BY r.created_at DESC LIMIT 1) latest ON TRUE
+        WHERE c.is_active=TRUE ORDER BY c.sort_order,c.label`),
       this.db.query('SELECT code,label FROM product_insurance_type_dictionary WHERE is_active=TRUE ORDER BY sort_order,label'),
     ]);
     return {
-      companies:companies.rows.map((row) => ({code:row.code,label:row.label})),
+      companies:companies.rows.map((row) => ({
+        code:row.code,label:row.label,syncSupported:Boolean(row.sync_supported),syncEnabled:Boolean(row.sync_enabled),
+        syncCoverage:row.sync_coverage || '',latestRun:row.latest_run_id ? {
+          id:row.latest_run_id,status:row.latest_run_status,finishedAt:row.latest_run_finished_at,
+          discoveredCount:Number(row.latest_run_discovered_count || 0),errorCount:Number(row.latest_run_error_count || 0),
+        } : null,
+      })),
       insuranceTypes:insuranceTypes.rows.map((row) => ({code:row.code,label:row.label})),
     };
   }
 
-  async listProductCenterProducts({search='',status=''}={}) {
+  async listProductCenterProducts({search='',status='',officialSaleStatus=''}={}) {
     const query = String(search || '').trim().slice(0,120);
     const {rows} = await this.db.query(`SELECT p.*,c.label AS company_label,t.label AS insurance_type_label,
       COUNT(DISTINCT doc.id)::int AS document_count,
+      COUNT(DISTINCT material.id) FILTER (WHERE material.is_current=TRUE)::int AS official_material_count,
       COUNT(DISTINCT e.id) FILTER (WHERE e.status='待核对')::int AS pending_extraction_count,
-      COUNT(DISTINCT d.id) FILTER (WHERE d.status IN ('待审核','草稿'))::int AS pending_draft_count
+      (COUNT(DISTINCT d.id) FILTER (WHERE d.status IN ('待审核','草稿') AND migrated.legacy_draft_id IS NULL) +
+       COUNT(DISTINCT cd.id) FILTER (WHERE cd.status IN ('待审核','草稿')))::int AS pending_draft_count
       FROM insurance_products p
       JOIN product_company_dictionary c ON c.code=p.company_code
       JOIN product_insurance_type_dictionary t ON t.code=p.insurance_type_code
       LEFT JOIN product_documents doc ON doc.product_id=p.id
+      LEFT JOIN product_official_materials material ON material.product_id=p.id
       LEFT JOIN product_extractions e ON e.product_id=p.id
       LEFT JOIN product_copy_drafts d ON d.product_id=p.id
+      LEFT JOIN product_copy_draft_migration_map migrated ON migrated.legacy_draft_id=d.id
+      LEFT JOIN content_topic_products cp ON cp.product_id=p.id
+      LEFT JOIN drafts cd ON cd.topic_id=cp.topic_id
       WHERE ($1='' OR p.product_name ILIKE '%'||$1||'%' OR p.short_name ILIKE '%'||$1||'%')
         AND ($2='' OR p.status=$2)
-      GROUP BY p.id,c.label,t.label ORDER BY p.updated_at DESC,p.id DESC`,[query,status]);
+        AND ($3='' OR ($3='verified_on_sale' AND p.official_sale_status='verified_on_sale' AND p.last_verified_at>=NOW()-INTERVAL '7 days')
+          OR ($3='review_required' AND (p.official_sale_status='review_required' OR (p.official_sale_status='verified_on_sale' AND p.last_verified_at<NOW()-INTERVAL '7 days')))
+          OR ($3 NOT IN ('verified_on_sale','review_required') AND p.official_sale_status=$3))
+      GROUP BY p.id,c.label,t.label ORDER BY p.updated_at DESC,p.id DESC`,[query,status,officialSaleStatus]);
     return rows.map(publicProduct);
   }
 
@@ -120,7 +161,7 @@ export class ProductCenterOperations {
       this.db.query('SELECT code FROM product_company_dictionary WHERE code=$1 AND is_active=TRUE',[companyCode]),
       this.db.query('SELECT code FROM product_insurance_type_dictionary WHERE code=$1 AND is_active=TRUE',[insuranceTypeCode]),
     ]);
-    if (!company.rows[0]) throw new BadRequestException('当前暂不支持该保险公司；首期仅开放新华保险产品档案');
+    if (!company.rows[0]) throw new BadRequestException('该保险公司尚未启用产品档案');
     if (!type.rows[0]) throw new BadRequestException('险种无效或暂未启用');
     const status = ['整理中','可用','已停用'].includes(body.status) ? body.status : '整理中';
     const effectiveDate = body.effectiveDate ? strictDate(body.effectiveDate,'产品适用日期') : null;
@@ -172,17 +213,27 @@ export class ProductCenterOperations {
 
   async productCenterWorkspace(productId) {
     const product = publicProduct(await this.findInsuranceProduct(productId));
-    const [documents,extractions,drafts] = await Promise.all([
+    const [documents,extractions,drafts,allContentTopics,officialMaterials] = await Promise.all([
       this.db.query('SELECT * FROM product_documents WHERE product_id=$1 ORDER BY created_at DESC,id DESC',[productId]),
-      this.db.query(`SELECT e.*,doc.file_name,doc.document_type,doc.page_count FROM product_extractions e
+      this.db.query(`SELECT e.*,doc.file_name,doc.document_type,doc.page_count,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('id',source_doc.id,'fileName',source_doc.file_name,
+          'documentType',source_doc.document_type,'pageCount',source_doc.page_count)
+          ORDER BY ed.sort_order,source_doc.created_at,source_doc.id)
+          FROM product_extraction_documents ed JOIN product_documents source_doc ON source_doc.id=ed.document_id
+          WHERE ed.extraction_id=e.id),'[]'::jsonb) AS source_documents
+        FROM product_extractions e
         JOIN product_documents doc ON doc.id=e.document_id WHERE e.product_id=$1 ORDER BY e.created_at DESC,e.id DESC`,[productId]),
       this.db.query('SELECT * FROM product_copy_drafts WHERE product_id=$1 ORDER BY updated_at DESC,id DESC',[productId]),
+      this.listTopics({type:'product_explainer',productId:Number(productId)}),
+      this.db.query('SELECT * FROM product_official_materials WHERE product_id=$1 ORDER BY is_current DESC,material_type,id',[productId]),
     ]);
     return {
       product,
       documents:documents.rows.map(publicDocument),
       extractions:extractions.rows.map(publicExtraction),
       drafts:drafts.rows.map(publicProductDraft),
+      contentTopics:allContentTopics,
+      officialMaterials:officialMaterials.rows.map(publicOfficialMaterial),
     };
   }
 
@@ -194,32 +245,10 @@ export class ProductCenterOperations {
   }
 
   async restoreProductCopyDraftVersion(draftId,version) {
-    const targetVersion = Number(version);
-    if (!Number.isInteger(targetVersion) || targetVersion < 1) throw new BadRequestException('文案版本号无效');
-    const result = await this.db.transaction(async (client) => {
-      const {rows} = await client.query(`SELECT d.*,p.product_name,settings.value AS settings_value FROM product_copy_drafts d
-        JOIN insurance_products p ON p.id=d.product_id LEFT JOIN settings ON settings.key='content' WHERE d.id=$1 FOR UPDATE OF d`,[draftId]);
-      const current = rows[0];
-      if (!current) throw new NotFoundException('找不到这份产品文案');
-      const target = await client.query('SELECT snapshot FROM product_copy_versions WHERE draft_id=$1 AND version=$2',[draftId,targetVersion]);
-      if (!target.rows[0]) throw new NotFoundException('找不到这个历史版本');
-      const snapshot = jsonValue(target.rows[0].snapshot,{});
-      if (!String(snapshot.title || '').trim() || !String(snapshot.body || '').trim()) throw new BadRequestException('历史版本内容不完整，无法恢复');
-      const currentVersion = Number(current.version || 1);
-      await client.query('INSERT INTO product_copy_versions(draft_id,version,snapshot,changed_by) VALUES($1,$2,$3::jsonb,$4)',
-        [draftId,currentVersion,JSON.stringify(snapshotDraft(current)),'before-restore']);
-      const settings = jsonValue(current.settings_value,{});
-      const html = current.platform === '公众号' ? this.renderWechatHtml(snapshot.title,snapshot.summary || '',snapshot.body,settings.wechatTheme || 'clean') : '';
-      const {rows:updated} = await client.query(`UPDATE product_copy_drafts SET title=$2,summary=$3,body=$4,hashtags=$5,sources=$6,
-        status='草稿',approval_checks='[false,false,false]'::jsonb,provider=$7,humanized=$8,html_content=$9,
-        platform_settings_snapshot=$10::jsonb,approved_at=NULL,version=$11,updated_at=NOW() WHERE id=$1 RETURNING *`,
-      [draftId,snapshot.title,snapshot.summary || '',snapshot.body,snapshot.hashtags || '',snapshot.sources || '',snapshot.provider || '',Boolean(snapshot.humanized),html,JSON.stringify(snapshot.platformSettings || {}),currentVersion + 1]);
-      return updated[0];
-    });
-    return publicProductDraft(result);
+    throw new ConflictException('旧产品文案已迁入内容工作台并设为历史数据，请在内容工作台编辑共用稿件。');
   }
 
-  async uploadProductDocument(productId,documentType,file) {
+  async uploadProductDocument(productId,documentType,file,provenance={}) {
     if (!file) throw new BadRequestException('请选择 PDF、DOCX 或 TXT 文件');
     if (!PRODUCT_DOCUMENT_TYPES.includes(documentType)) {
       if (file.path) await rm(path.resolve(file.path),{force:true});
@@ -238,17 +267,24 @@ export class ProductCenterOperations {
     try { await this.findInsuranceProduct(productId); }
     catch (error) { await rm(path.resolve(file.path),{force:true}); throw error; }
     const fileName = path.basename(String(file.originalname || '资料')).replace(/[\u0000-\u001f]/g,'').slice(0,240) || '产品资料';
+    let buffer;
+    try { buffer=await readFile(path.resolve(file.path)); }
+    catch(error) { await rm(path.resolve(file.path),{force:true}); throw new BadRequestException('无法读取上传的产品资料'); }
+    const sourceSha256=createHash('sha256').update(buffer).digest('hex');
     let inserted;
     try {
-      inserted = await this.db.query(`INSERT INTO product_documents(product_id,document_type,file_name,storage_name,mime_type,byte_size)
-        VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[productId,documentType,fileName,path.basename(file.filename),file.mimetype || 'application/octet-stream',Number(file.size)]);
+      inserted = await this.db.query(`INSERT INTO product_documents(product_id,document_type,file_name,storage_name,mime_type,byte_size,
+        source_type,source_url,source_page_url,source_sha256)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[
+        productId,documentType,fileName,path.basename(file.filename),file.mimetype || 'application/octet-stream',Number(file.size),
+        provenance.sourceUrl?'official_sync':'manual',provenance.sourceUrl || '',provenance.sourcePageUrl || '',sourceSha256,
+      ]);
     } catch (error) {
       await rm(path.resolve(file.path),{force:true});
       throw error;
     }
     const documentId = Number(inserted.rows[0].id);
     try {
-      const buffer = await readFile(path.resolve(file.path));
       const parsed = await extractProductDocumentText({buffer,fileName});
       const limited = parsed.text.slice(0,MAX_PRODUCT_TEXT);
       let remaining = MAX_PRODUCT_TEXT;
@@ -273,6 +309,75 @@ export class ProductCenterOperations {
     }
   }
 
+  async importOfficialProductMaterial(productId,materialId) {
+    const product=await this.findInsuranceProduct(productId);
+    if (product.source_type!=='official_sync' || !isProductSyncUrlSafe(product.official_product_url,product.company_code)) {
+      throw new BadRequestException('该产品没有可验证的官网资料来源');
+    }
+    const {rows}=await this.db.query(`SELECT * FROM product_official_materials
+      WHERE id=$1 AND product_id=$2 AND is_current=TRUE`,[materialId,productId]);
+    const source=rows[0];
+    if (!source || !isProductSyncUrlSafe(source.source_url,product.company_code)) throw new NotFoundException('找不到当前有效的官网资料链接');
+    const fetchPdf=async(url)=>{
+      let requestUrl=url;
+      let response;
+      for (let redirectCount=0;redirectCount<=5;redirectCount++) {
+        response=await fetch(requestUrl,{redirect:'manual',signal:AbortSignal.timeout(30_000)});
+        if (![301,302,303,307,308].includes(response.status)) break;
+        const location=response.headers.get('location');
+        let nextUrl='';
+        try { nextUrl=location ? new URL(location,requestUrl).href : ''; } catch {}
+        if (!nextUrl || !isProductSyncUrlSafe(nextUrl,product.company_code)) {
+          throw new BadRequestException('官网资料跳转到了未授权域名，已停止下载');
+        }
+        if (redirectCount===5) throw new BadRequestException('官网资料跳转次数过多，已停止下载');
+        requestUrl=nextUrl;
+      }
+      const finalUrl=response.url || requestUrl;
+      if (!isProductSyncUrlSafe(finalUrl,product.company_code)) throw new BadRequestException('官网资料跳转到了未授权域名，已停止下载');
+      if (!response.ok) throw new ServiceUnavailableException(`官网资料下载失败（HTTP ${response.status}）`);
+      const declared=Number(response.headers.get('content-length') || 0);
+      if (declared>PRODUCT_DOCUMENT_MAX_BYTES) throw new BadRequestException('官网资料超过 25 MB 上限');
+      const chunks=[]; let totalBytes=0;
+      if (response.body) for await (const chunk of response.body) {
+        const bytes=Buffer.from(chunk); totalBytes+=bytes.length;
+        if (totalBytes>PRODUCT_DOCUMENT_MAX_BYTES) throw new BadRequestException('官网资料超过 25 MB 上限');
+        chunks.push(bytes);
+      }
+      const bytes=Buffer.concat(chunks,totalBytes);
+      if (!bytes.length) throw new BadRequestException('官网资料必须大于 0 且不超过 25 MB');
+      return {bytes,url:finalUrl,contentType:response.headers.get('content-type') || ''};
+    };
+    let downloaded=await fetchPdf(source.source_url);
+    if (downloaded.bytes.subarray(0,5).toString('ascii')!=='%PDF-') {
+      const html=downloaded.bytes.toString('utf8');
+      const candidates=[...html.matchAll(/(?:href|src)\s*=\s*["']([^"']+)["']/gi)].map((match)=>match[1])
+        .filter((url)=>/\.pdf(?:[?#]|$)/i.test(url)).map((url)=>new URL(url,downloaded.url).href)
+        .filter((url)=>isProductSyncUrlSafe(url,product.company_code)).slice(0,5);
+      let resolved=null;
+      for (const candidate of candidates) {
+        const next=await fetchPdf(candidate);
+        if (next.bytes.subarray(0,5).toString('ascii')==='%PDF-') { resolved=next; break; }
+      }
+      if (!resolved) throw new BadRequestException('该官网页面没有提供可直接导入的 PDF，请打开来源页核实');
+      downloaded=resolved;
+    }
+    const buffer=downloaded.bytes;
+    const digest=createHash('sha256').update(buffer).digest('hex');
+    const duplicate=await this.db.query("SELECT * FROM product_documents WHERE product_id=$1 AND source_type='official_sync' AND source_sha256=$2 ORDER BY created_at DESC LIMIT 1",[productId,digest]);
+    if (duplicate.rows[0]) return {...publicDocument(duplicate.rows[0]),alreadyImported:true};
+    const filename=`${String(source.label || '官方产品资料').replace(/[\\/:*?"<>|\u0000-\u001f]/g,' ').trim().slice(0,100) || '官方产品资料'}.pdf`;
+    const storageName=`${randomUUID()}.pdf`; const filePath=safeStoragePath(storageName);
+    await writeFile(filePath,buffer,{flag:'wx'});
+    try {
+      return await this.uploadProductDocument(productId,source.material_type,{
+        filename:storageName,path:filePath,originalname:filename,mimetype:'application/pdf',size:buffer.length,
+      },{sourceUrl:downloaded.url,sourcePageUrl:source.source_page_url});
+    } catch(error) {
+      await rm(filePath,{force:true}); throw error;
+    }
+  }
+
   async productDocumentFile(documentId) {
     const {rows} = await this.db.query('SELECT file_name,storage_name,mime_type FROM product_documents WHERE id=$1',[documentId]);
     if (!rows[0]) throw new NotFoundException('找不到这份产品资料');
@@ -283,9 +388,16 @@ export class ProductCenterOperations {
     const result = await this.db.transaction(async (client) => {
       const {rows} = await client.query('SELECT * FROM product_documents WHERE id=$1 FOR UPDATE',[documentId]);
       if (!rows[0]) throw new NotFoundException('找不到这份产品资料');
+      const linked = await client.query(`SELECT 1 FROM content_topic_products link JOIN product_extractions e ON e.id=link.extraction_id
+        LEFT JOIN product_extraction_documents ed ON ed.extraction_id=e.id
+        WHERE e.document_id=$1 OR ed.document_id=$1 LIMIT 1`,[documentId]);
+      if (linked.rowCount) throw new ConflictException('这份资料已被内容工作台的产品解读引用，请保留资料或先处理关联内容');
       const counts = await client.query(`SELECT COUNT(DISTINCT e.id)::int AS extractions,
         COUNT(DISTINCT d.id)::int AS drafts FROM product_extractions e
-        LEFT JOIN product_copy_drafts d ON d.extraction_id=e.id WHERE e.document_id=$1`,[documentId]);
+        LEFT JOIN product_extraction_documents ed ON ed.extraction_id=e.id
+        LEFT JOIN product_copy_drafts d ON d.extraction_id=e.id WHERE e.document_id=$1 OR ed.document_id=$1`,[documentId]);
+      await client.query(`DELETE FROM product_extractions e WHERE e.document_id=$1 OR EXISTS(
+        SELECT 1 FROM product_extraction_documents ed WHERE ed.extraction_id=e.id AND ed.document_id=$1)`,[documentId]);
       await client.query('DELETE FROM product_documents WHERE id=$1',[documentId]);
       await client.query('UPDATE insurance_products SET updated_at=NOW() WHERE id=$1',[rows[0].product_id]);
       return {row:rows[0],counts:counts.rows[0] || {extractions:0,drafts:0}};
@@ -300,6 +412,8 @@ export class ProductCenterOperations {
     const result = await this.db.transaction(async (client) => {
       const product = await client.query('SELECT id FROM insurance_products WHERE id=$1 FOR UPDATE',[productId]);
       if (!product.rows[0]) throw new NotFoundException('找不到这个产品档案');
+      const linked = await client.query('SELECT 1 FROM content_topic_products WHERE product_id=$1 LIMIT 1',[productId]);
+      if (linked.rowCount) throw new ConflictException('这个产品档案已被内容工作台引用，请保留档案或先处理关联内容');
       const documents = await client.query('SELECT storage_name FROM product_documents WHERE product_id=$1',[productId]);
       const counts = await client.query(`SELECT COUNT(DISTINCT e.id)::int AS extractions,COUNT(DISTINCT d.id)::int AS drafts
         FROM product_extractions e LEFT JOIN product_copy_drafts d ON d.extraction_id=e.id WHERE e.product_id=$1`,[productId]);
@@ -313,32 +427,51 @@ export class ProductCenterOperations {
     return {productId:Number(productId),deletedDocuments:result.storageNames.length,deletedExtractions:Number(result.counts.extractions || 0),deletedDrafts:Number(result.counts.drafts || 0)};
   }
 
-  async analyzeProductDocument(documentId) {
-    const {rows} = await this.db.query(`SELECT p.*,c.label AS company_label,t.label AS insurance_type_label,
-      doc.id AS document_id,doc.file_name,doc.document_type,doc.parse_status,doc.page_count,
-      doc.extracted_text,doc.extracted_pages FROM product_documents doc
-      JOIN insurance_products p ON p.id=doc.product_id
-      JOIN product_company_dictionary c ON c.code=p.company_code
-      JOIN product_insurance_type_dictionary t ON t.code=p.insurance_type_code WHERE doc.id=$1`,[documentId]);
-    const row = rows[0];
-    if (!row) throw new NotFoundException('找不到这份产品资料');
-    if (!['parsed','needs_review'].includes(row.parse_status) || !String(row.extracted_text || '').trim()) {
-      throw new BadRequestException('这份资料没有可整理的文字，请先检查或重新上传');
-    }
-    const product = publicProduct(row);
-    const document = {
-      id:Number(row.document_id),fileName:row.file_name,documentType:row.document_type,pageCount:row.page_count,
+  async analyzeProductMaterials(productId) {
+    const productRow = await this.findInsuranceProduct(productId);
+    const product = publicProduct(productRow);
+    const {rows} = await this.db.query(`SELECT id,product_id,file_name,document_type,parse_status,page_count,
+      extracted_text,extracted_pages,extracted_char_count FROM product_documents WHERE product_id=$1
+      ORDER BY created_at,id`,[productId]);
+    if (!rows.length) throw new BadRequestException('请先为这个产品上传或导入资料');
+    const documents = rows.map((row) => ({
+      id:Number(row.id),fileName:row.file_name,documentType:row.document_type,pageCount:row.page_count,
+      parseStatus:row.parse_status,extractedCharCount:Number(row.extracted_char_count || 0),
       extractedText:row.extracted_text,pages:parseJsonArray(row.extracted_pages),
-    };
-    const prompt = buildProductAnalysisPrompt({product,document});
-    const generated = await this.callModel(prompt.instructions,prompt.input);
-    if (!generated) throw new ServiceUnavailableException('尚未配置 RUNWARE_API_KEY，无法调用 GPT 整理产品资料');
-    const analysis = normalizeProductAnalysis(generated,{documentId:Number(documentId),document,documentText:document.extractedText,documentPages:document.pages});
-    const {rows:inserted} = await this.db.query(`INSERT INTO product_extractions(product_id,document_id,positioning,facts,open_questions,status,provider)
-      VALUES($1,$2,$3,$4::jsonb,$5::jsonb,'待核对',$6) RETURNING *`,
-    [row.id,documentId,analysis.positioning,JSON.stringify(analysis.facts),JSON.stringify(analysis.openQuestions),runwareTextModel()]);
-    await this.db.query('UPDATE insurance_products SET updated_at=NOW() WHERE id=$1',[row.id]);
-    return publicExtraction({...inserted[0],file_name:row.file_name,document_type:row.document_type,page_count:row.page_count});
+    }));
+    const unavailable = documents.filter((item) => !['parsed','needs_review'].includes(item.parseStatus) || String(item.extractedText || '').trim().length < 40);
+    if (unavailable.length) {
+      const names = unavailable.map((item) => item.fileName).join('、');
+      throw new BadRequestException(`请先完成全部资料的文字解析（至少 40 字）：${names}`);
+    }
+    const prompt = buildProductAnalysisPrompt({product,documents});
+    const generated = await this.callDeepSeekModel(prompt.instructions,prompt.input,120_000,{reasoningEffort:'low',maxTokens:32_768});
+    if (!generated) throw new ServiceUnavailableException('尚未配置 DEEPSEEK_API_KEY，无法使用 DeepSeek 整理产品资料');
+    const analysis = normalizeProductAnalysis(generated,{documents});
+    return this.db.transaction(async (client) => {
+      const {rows:inserted} = await client.query(`INSERT INTO product_extractions(product_id,document_id,positioning,facts,open_questions,status,provider)
+        VALUES($1,$2,$3,$4::jsonb,$5::jsonb,'待核对',$6) RETURNING *`,
+      [productId,documents[0].id,analysis.positioning,JSON.stringify(analysis.facts),JSON.stringify(analysis.openQuestions),deepseekTextModel()]);
+      for (const [index,document] of documents.entries()) {
+        await client.query(`INSERT INTO product_extraction_documents(product_id,extraction_id,document_id,sort_order)
+          VALUES($1,$2,$3,$4)`,[productId,inserted[0].id,document.id,index]);
+      }
+      await client.query('UPDATE insurance_products SET updated_at=NOW() WHERE id=$1',[productId]);
+      const {rows:result} = await client.query(`SELECT e.*,doc.file_name,doc.document_type,doc.page_count,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('id',source_doc.id,'fileName',source_doc.file_name,
+          'documentType',source_doc.document_type,'pageCount',source_doc.page_count)
+          ORDER BY ed.sort_order,source_doc.created_at,source_doc.id)
+          FROM product_extraction_documents ed JOIN product_documents source_doc ON source_doc.id=ed.document_id
+          WHERE ed.extraction_id=e.id),'[]'::jsonb) AS source_documents
+        FROM product_extractions e JOIN product_documents doc ON doc.id=e.document_id WHERE e.id=$1`,[inserted[0].id]);
+      return publicExtraction(result[0]);
+    });
+  }
+
+  async analyzeProductDocument(documentId) {
+    const {rows} = await this.db.query('SELECT product_id FROM product_documents WHERE id=$1',[documentId]);
+    if (!rows[0]) throw new NotFoundException('找不到这份产品资料');
+    return this.analyzeProductMaterials(Number(rows[0].product_id));
   }
 
   async updateProductExtraction(extractionId,body={}) {
@@ -396,105 +529,14 @@ export class ProductCenterOperations {
   }
 
   async generateProductCopyDraft(extractionId,platform) {
-    const {rows} = await this.db.query(`SELECT e.*,p.product_name,p.product_version,p.company_code,
-      doc.file_name,doc.document_type,doc.page_count FROM product_extractions e
-      JOIN insurance_products p ON p.id=e.product_id JOIN product_documents doc ON doc.id=e.document_id WHERE e.id=$1`,[extractionId]);
-    const row = rows[0];
-    if (!row) throw new NotFoundException('找不到这份产品要点');
-    if (row.status !== '已确认') throw new BadRequestException('请先完成产品要点的人工核对');
-    const product = {productName:row.product_name,productVersion:row.product_version,companyCode:row.company_code};
-    const extraction = {positioning:row.positioning,facts:parseJsonArray(row.facts)};
-    const platformSettings = (await this.productCenterPlatformSettings()).find((item) => item.platform === platform) || {};
-    const prompt = buildProductCopyPrompt({product,extraction,platform,platformConfig:platformSettings});
-    const generated = await this.callModel(prompt.instructions,prompt.input);
-    if (!generated) throw new ServiceUnavailableException('尚未配置 RUNWARE_API_KEY，无法生成产品平台文案');
-    const output = normalizeProductCopy(generated,platform);
-    output.title = cleanGeneratedCopy(output.title);
-    output.summary = cleanGeneratedCopy(output.summary);
-    output.hashtags = cleanGeneratedCopy(output.hashtags);
-    let humanized = false;
-    let polished = output.body;
-    try {
-      const result = await this.runSkill({skill:'humanizer-zh',drafts:[{platform,title:output.title,text:output.body}]},600_000);
-      const candidate = (result.drafts || []).find((draft) => draft.platform === platform)?.text;
-      if (String(candidate || '').trim()) { polished = candidate; humanized = true; }
-    } catch (error) {
-      console.warn(`[workbench] humanizer-zh unavailable for product draft ${platform}: ${String(error?.message || 'skill error').slice(0,180)}`);
-    }
-    const body = cleanGeneratedCopy(polished).slice(0,40_000);
-    const facts = extraction.facts.filter((fact) => fact.confirmed);
-    const sources = productCopySources(facts);
-    const settings = await this.getSettings();
-    const htmlContent = platform === '公众号' ? this.renderWechatHtml(output.title,output.summary,body,settings.content?.wechatTheme || 'clean') : '';
-    const result = await this.db.transaction(async (client) => {
-      const prior = await client.query('SELECT * FROM product_copy_drafts WHERE extraction_id=$1 AND platform=$2 FOR UPDATE',[extractionId,platform]);
-      let saved;
-      if (prior.rows[0]) {
-        const old = prior.rows[0];
-        const oldVersion = Number(old.version || 1);
-        await client.query('INSERT INTO product_copy_versions(draft_id,version,snapshot,changed_by) VALUES($1,$2,$3::jsonb,$4)',
-          [old.id,oldVersion,JSON.stringify(snapshotDraft(old)),'before-regenerate']);
-        const update = await client.query(`UPDATE product_copy_drafts SET title=$2,summary=$3,body=$4,hashtags=$5,sources=$6,
-          status='待审核',approval_checks='[false,false,false]'::jsonb,provider=$7,humanized=$8,html_content=$9,
-          platform_settings_snapshot=$10::jsonb,version=$11,approved_at=NULL,updated_at=NOW() WHERE id=$1 RETURNING *`,
-        [old.id,output.title,output.summary,body,output.hashtags,sources,runwareTextModel(),humanized,htmlContent,JSON.stringify(platformSettings),oldVersion + 1]);
-        saved = update.rows[0];
-      } else {
-        const insert = await client.query(`INSERT INTO product_copy_drafts(product_id,extraction_id,platform,title,summary,body,hashtags,sources,
-          status,approval_checks,provider,humanized,html_content,platform_settings_snapshot)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,'待审核','[false,false,false]'::jsonb,$9,$10,$11,$12::jsonb) RETURNING *`,
-        [row.product_id,extractionId,platform,output.title,output.summary,body,output.hashtags,sources,runwareTextModel(),humanized,htmlContent,JSON.stringify(platformSettings)]);
-        saved = insert.rows[0];
-      }
-      await client.query('UPDATE insurance_products SET updated_at=NOW() WHERE id=$1',[row.product_id]);
-      return saved;
-    });
-    return publicProductDraft(result);
+    throw new ConflictException('产品解读稿件已统一到内容工作台，请从产品中心的“产品解读”入口继续。');
   }
 
   async saveProductCopyDraft(draftId,body={}) {
-    const result = await this.db.transaction(async (client) => {
-      const {rows} = await client.query(`SELECT d.*,p.product_name,settings.value AS settings_value FROM product_copy_drafts d
-        JOIN insurance_products p ON p.id=d.product_id LEFT JOIN settings ON settings.key='content' WHERE d.id=$1 FOR UPDATE OF d`,[draftId]);
-      const current = rows[0];
-      if (!current) throw new NotFoundException('找不到这份产品文案');
-      const title = body.title === undefined ? current.title : cleanText(body.title,'标题',200,{required:true});
-      const summary = body.summary === undefined ? current.summary : cleanText(body.summary,'摘要',500);
-      const text = body.body === undefined ? current.body : cleanText(body.body,'正文',40_000,{required:true});
-      const hashtags = body.hashtags === undefined ? current.hashtags : cleanText(body.hashtags,'话题标签',800);
-      const contentChanged = title !== current.title || summary !== current.summary || text !== current.body || hashtags !== current.hashtags;
-      if (body.checks !== undefined && (!Array.isArray(body.checks) || body.checks.length !== 3 || body.checks.some((value) => typeof value !== 'boolean'))) throw new BadRequestException('发布前核对项格式无效');
-      const incomingChecks = Array.isArray(body.checks) ? body.checks : null;
-      const checks = incomingChecks && incomingChecks.length === 3 ? incomingChecks : jsonValue(current.approval_checks,[false,false,false]).map(Boolean).slice(0,3);
-      const safeChecks = contentChanged ? [false,false,false] : checks;
-      const status = contentChanged ? '草稿' : current.status;
-      const settings = jsonValue(current.settings_value,{});
-      const html = current.platform === '公众号' ? this.renderWechatHtml(title,summary,text,settings.wechatTheme || 'clean') : '';
-      if (!contentChanged && JSON.stringify(safeChecks) === JSON.stringify(jsonValue(current.approval_checks,[false,false,false]))) return current;
-      const version = Number(current.version || 1);
-      await client.query('INSERT INTO product_copy_versions(draft_id,version,snapshot,changed_by) VALUES($1,$2,$3::jsonb,$4)',
-        [draftId,version,JSON.stringify(snapshotDraft(current)),'agent-edit']);
-      const {rows:updated} = await client.query(`UPDATE product_copy_drafts SET title=$2,summary=$3,body=$4,hashtags=$5,
-        status=$6,approval_checks=$7::jsonb,html_content=$8,approved_at=NULL,version=$9,updated_at=NOW() WHERE id=$1 RETURNING *`,
-      [draftId,title,summary,text,hashtags,status,JSON.stringify(safeChecks),html,version + 1]);
-      return updated[0];
-    });
-    return publicProductDraft(result);
+    throw new ConflictException('旧产品文案已迁入内容工作台并设为历史数据，请在内容工作台编辑共用稿件。');
   }
 
   async approveProductCopyDraft(draftId,body={}) {
-    const checks = body.checks;
-    if (!Array.isArray(checks) || checks.length !== 3 || checks.some((value) => typeof value !== 'boolean') || !checks.every((value) => value === true)) {
-      throw new BadRequestException('请先完成三项发布前核对');
-    }
-    return this.db.transaction(async (client) => {
-      const {rows} = await client.query(`SELECT d.id,d.extraction_id,e.status AS extraction_status FROM product_copy_drafts d
-        JOIN product_extractions e ON e.id=d.extraction_id WHERE d.id=$1 FOR UPDATE OF d,e`,[draftId]);
-      if (!rows[0]) throw new NotFoundException('找不到这份产品文案');
-      if (rows[0].extraction_status !== '已确认') throw new BadRequestException('产品要点已失效，请重新核对后再审核文案');
-      const {rows:updated} = await client.query(`UPDATE product_copy_drafts SET status='已审核',approval_checks=$2::jsonb,
-        approved_at=NOW(),updated_at=NOW() WHERE id=$1 RETURNING *`,[draftId,JSON.stringify(checks)]);
-      return publicProductDraft(updated[0]);
-    });
+    throw new ConflictException('旧产品文案已迁入内容工作台并设为历史数据，请在内容工作台审核共用稿件。');
   }
 }

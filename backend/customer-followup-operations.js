@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { STAGES, normalizePhone, normalizePolicyNumber, maskPhone, maskPolicyNumber, dateOnly, strictDate, optionalTime, pgDate, pgTime, beijingDate, taskWhen, beijingMonthStart } from './workbench-primitives.js';
+import { normalizedPolicyName } from './policy-contract-export-facts.js';
+import { loadPolicyContractLocalEvidence } from './policy-contract-local-evidence.js';
 
 export class CustomerFollowupOperations {
   async sources() {
@@ -91,7 +93,9 @@ export class CustomerFollowupOperations {
       followUpTaskEvents: taskEventResult.rows.map((item) => ({id:Number(item.id),taskId:Number(item.task_id),title:item.title,action:item.action,fromDate:pgDate(item.from_due_date),toDate:pgDate(item.to_due_date),note:item.note,at:item.created_at})),
       policies: policyResult.rows.map((item) => ({
         id: Number(item.id), company: item.company, name: item.policy_name, type: item.insurance_type,
-        premium: item.premium || '待核实', amount: item.coverage_summary || '待核实',
+        premium: item.premium || '待核实',
+        amount: item.basic_sum_insured?.amount ? `${item.basic_sum_insured.label || '基本保险金额'}：${item.basic_sum_insured.amount}` : item.coverage_summary || '待核实',
+        basicSumInsured:item.basic_sum_insured || null,
         state: item.verified ? '已核实' : '待核实', expiry: dateOnly(item.expiry_date) || '待核实',
         expiryDate:pgDate(item.expiry_date) || null,effectiveDate:pgDate(item.effective_date) || null,
         nextPaymentDate:pgDate(item.next_payment_date) || null,contractStatus:item.contract_status || 'unknown',
@@ -195,6 +199,65 @@ export class CustomerFollowupOperations {
       return Number(result.rows[0].id);
     });
     return this.customer(customerId).then((record) => ({ policy: record.policies.find((item) => item.id === id), customer: record }));
+  }
+
+  async deletePolicy(customerId, policyId) {
+    await this.findCustomer(customerId);
+    const {rows:policyRows}=await this.db.query('SELECT id,policy_name,effective_date FROM policies WHERE id=$1 AND customer_id=$2',[policyId,customerId]);
+    const policy=policyRows[0];
+    if (!policy) throw new NotFoundException('找不到这份客户保单');
+
+    // Some older contracts were matched by product and effective date during
+    // coverage review without a persistent policy_id link. Find those exact
+    // matches before opening the deletion transaction, so PDF parsing does not
+    // hold database locks.
+    const policies=await this.db.query('SELECT id,policy_name,effective_date FROM policies WHERE customer_id=$1',[customerId]);
+    const targetName=normalizedPolicyName(policy.policy_name);
+    const targetDate=pgDate(policy.effective_date);
+    const targetMatches=policies.rows.filter((item)=>normalizedPolicyName(item.policy_name)===targetName
+      && pgDate(item.effective_date)===targetDate);
+    const unlinkedDocuments=await this.db.query(`SELECT id,file_name,storage_name,parse_status FROM customer_policy_contracts
+      WHERE customer_id=$1 AND policy_id IS NULL AND coverage_excluded_at IS NULL`,[customerId]);
+    const matchedDocumentIds=[];
+    if (targetName && targetDate && targetMatches.length===1) {
+      for (const document of unlinkedDocuments.rows) {
+        try {
+          const evidence=await loadPolicyContractLocalEvidence({
+            storageName:document.storage_name,fileName:document.file_name,parseStatus:document.parse_status,
+          });
+          if (normalizedPolicyName(evidence.facts.productName)===targetName && evidence.facts.effectiveDate===targetDate) {
+            matchedDocumentIds.push(Number(document.id));
+          }
+        } catch {
+          // An unreadable or missing PDF cannot be safely linked to this policy.
+        }
+      }
+    }
+
+    await this.db.transaction(async (client) => {
+      const lockedPolicy=await client.query('SELECT policy_name,effective_date FROM policies WHERE id=$1 AND customer_id=$2 FOR UPDATE',[policyId,customerId]);
+      if (!lockedPolicy.rows[0]) throw new NotFoundException('找不到这份客户保单');
+      if (lockedPolicy.rows[0].policy_name!==policy.policy_name || pgDate(lockedPolicy.rows[0].effective_date)!==targetDate) {
+        throw new ConflictException('保单资料刚有更新，请刷新后重试删除');
+      }
+
+      const serviceItems=await client.query('SELECT id FROM policy_service_items WHERE policy_id=$1',[policyId]);
+      const serviceItemIds=serviceItems.rows.map((item)=>item.id);
+      if (serviceItemIds.length) {
+        await client.query('UPDATE customer_follow_up_tasks SET service_item_id=NULL WHERE service_item_id=ANY($1::bigint[])',[serviceItemIds]);
+        await client.query('UPDATE follow_ups SET service_item_id=NULL WHERE service_item_id=ANY($1::bigint[])',[serviceItemIds]);
+      }
+
+      await client.query(`DELETE FROM family_contracts fc USING customer_policy_contracts d
+        WHERE fc.contract_id=d.id AND d.customer_id=$1 AND (d.policy_id=$2 OR d.id=ANY($3::bigint[]))`,
+      [customerId,policyId,matchedDocumentIds]);
+      await client.query(`UPDATE customer_policy_contracts SET
+        analysis_status=CASE WHEN analysis_status='已归档' THEN '已整理' ELSE analysis_status END,
+        coverage_excluded_at=NOW(),updated_at=NOW()
+        WHERE customer_id=$1 AND (policy_id=$2 OR id=ANY($3::bigint[]))`,[customerId,policyId,matchedDocumentIds]);
+      await client.query('DELETE FROM policies WHERE id=$1 AND customer_id=$2',[policyId,customerId]);
+    });
+    return this.customer(customerId);
   }
 
   async verifyPolicy(policyId, verified) {

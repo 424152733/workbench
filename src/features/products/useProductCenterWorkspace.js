@@ -90,7 +90,7 @@ export function useProductCenterWorkspace({api,performApiAction,messageApi}) {
   const createProduct = (values) => runAction('product-center:create',() => api.createInsuranceProduct(values),async (product) => {
     const nextId = Number(product.id);
     await loadIndex({selectId:nextId}).catch(() => null);
-    messageApi.success('新华保险产品档案已创建');
+    messageApi.success('产品档案已创建');
   });
 
   const updateProduct = (values) => {
@@ -132,13 +132,28 @@ export function useProductCenterWorkspace({api,performApiAction,messageApi}) {
     });
   };
 
+  const importOfficialMaterial = (materialId) => {
+    if (!selectedProductId) return Promise.resolve(null);
+    return runAction(`product-center:official-import:${materialId}`,async () => {
+      const document=await api.importOfficialProductMaterial(selectedProductId,materialId);
+      const nextWorkspace=await api.productCenterWorkspace(selectedProductId);
+      return {document,nextWorkspace};
+    },({document,nextWorkspace}) => {
+      setWorkspace(nextWorkspace);
+      setActiveDocumentId(document.id);
+      messageApi.success(document.alreadyImported ? '这份官方资料已导入过' : '官方资料已导入并进入产品核对流程');
+    });
+  };
+
   const deleteDocument = (documentId) => runAction(`product-center:document:delete:${documentId}`,async () => {
     const result = await api.deleteProductDocument(documentId);
     let nextWorkspace;
     try {
       nextWorkspace = await api.productCenterWorkspace(selectedProductId);
     } catch {
-      const deletedExtractionIds = new Set((workspace?.extractions || []).filter((item) => Number(item.documentId) === Number(documentId)).map((item) => Number(item.id)));
+      const deletedExtractionIds = new Set((workspace?.extractions || []).filter((item) =>
+        Number(item.documentId) === Number(documentId) || item.sourceDocuments?.some((source) => Number(source.id) === Number(documentId)),
+      ).map((item) => Number(item.id)));
       nextWorkspace = workspace ? {
         ...workspace,
         documents:workspace.documents.filter((item) => Number(item.id) !== Number(documentId)),
@@ -156,16 +171,19 @@ export function useProductCenterWorkspace({api,performApiAction,messageApi}) {
     messageApi.success(`资料及关联的 ${result.deletedExtractions} 份要点、${result.deletedDrafts} 篇文案已删除`);
   });
 
-  const analyzeDocument = (documentId) => runAction(`product-center:analyze:${documentId}`,async () => {
-    const extraction = await api.analyzeProductDocument(documentId);
-    const nextWorkspace = await api.productCenterWorkspace(selectedProductId);
-    return {extraction,nextWorkspace};
-  },({extraction,nextWorkspace}) => {
-    setWorkspace(nextWorkspace);
-    setActiveDocumentId(Number(documentId));
-    setActiveExtractionId(extraction.id);
-    messageApi.success('产品要点已提取，请逐条核对资料出处');
-  });
+  const analyzeMaterials = () => {
+    if (!selectedProductId) return Promise.resolve(null);
+    return runAction(`product-center:analyze:${selectedProductId}`,async () => {
+      const extraction = await api.analyzeProductMaterials(selectedProductId);
+      const nextWorkspace = await api.productCenterWorkspace(selectedProductId);
+      return {extraction,nextWorkspace};
+    },({extraction,nextWorkspace}) => {
+      setWorkspace(nextWorkspace);
+      setActiveDocumentId(Number(extraction.sourceDocuments?.[0]?.id || extraction.documentId));
+      setActiveExtractionId(extraction.id);
+      messageApi.success(`已汇总 ${extraction.sourceDocuments?.length || nextWorkspace.documents.length} 份产品资料，请逐条核对文件和页码来源`);
+    });
+  };
 
   const updateExtraction = (extractionId,facts) => runAction(`product-center:extraction:save:${extractionId}`,async () => {
     const extraction = await api.updateProductExtraction(extractionId,facts);
@@ -225,7 +243,7 @@ export function useProductCenterWorkspace({api,performApiAction,messageApi}) {
   return {
     meta,platformSettings,products,selectedProductId,workspace,activeDocumentId,setActiveDocumentId,activeExtractionId,setActiveExtractionId,
     platform,setPlatform,pageLoading,pageError,loadIndex,selectProduct,createProduct,updateProduct,deleteProduct,
-    uploadDocument,deleteDocument,analyzeDocument,updateExtraction,confirmExtraction,generateDraft,saveDraft,approveDraft,
+    uploadDocument,importOfficialMaterial,deleteDocument,analyzeMaterials,updateExtraction,confirmExtraction,generateDraft,saveDraft,approveDraft,
     updatePlatformSettings,loadDraftVersions,restoreDraftVersion,
   };
 }

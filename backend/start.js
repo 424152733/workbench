@@ -10,7 +10,11 @@ if (!allowedTargets.has(target)) {
 const useEnvProxy = process.env.NODE_USE_ENV_PROXY === '1'
   && process.allowedNodeEnvironmentFlags.has('--use-env-proxy');
 const runtimeArgs = useEnvProxy ? ['--use-env-proxy'] : [];
-const child = spawn(process.execPath,[...runtimeArgs,target],{stdio:'inherit'});
+const env=target==='backend/main.js' ? {
+  ...process.env,
+  NO_PROXY:[process.env.NO_PROXY,process.env.no_proxy,'cws.aia.com.cn'].filter(Boolean).join(','),
+} : process.env;
+const child = spawn(process.execPath,[...runtimeArgs,target],{stdio:'inherit',env});
 
 child.once('error',(error) => {
   console.error(`[start] Could not start ${target}: ${error.message}`);

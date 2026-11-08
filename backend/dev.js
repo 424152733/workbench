@@ -6,12 +6,15 @@ const proxyRuntimeArgs = process.env.NODE_USE_ENV_PROXY === '1'
   ? ['--use-env-proxy']
   : [];
 const services = [
-  ['NestJS API',process.execPath,[...proxyRuntimeArgs,'backend/main.js']],
+  ['NestJS API',process.execPath,[...proxyRuntimeArgs,'backend/main.js'],{
+    ...process.env,
+    NO_PROXY:[process.env.NO_PROXY,process.env.no_proxy,'cws.aia.com.cn'].filter(Boolean).join(','),
+  }],
   ['Skill runner',process.execPath,[...proxyRuntimeArgs,'backend/skill-runner.js']],
   ['Vite frontend',process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1']],
 ];
-const processes = services.map(([name,command,args]) => {
-  const child = spawn(command,args,{stdio:'inherit'});
+const processes = services.map(([name,command,args,env]) => {
+  const child = spawn(command,args,{stdio:'inherit',...(env ? {env} : {})});
   child.once('error',(error) => {
     console.error(`[dev:all] Could not start ${name}: ${error.message}`);
     shutdown('SIGTERM',1);

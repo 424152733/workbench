@@ -14,8 +14,10 @@ let baseUrl;
 let db;
 let mockRunner;
 let priorRunwareKey;
-let priorRunwareTextModel;
 let priorSkillRunner;
+let priorDeepSeekKey;
+let priorDeepSeekBaseUrl;
+let priorDeepSeekTextModel;
 let skillRequests = [];
 const suffix = `${Date.now()}-${Math.random().toString(16).slice(2,8)}`;
 const phone = `139${String(Date.now()).slice(-8)}`;
@@ -38,10 +40,14 @@ const json = (method,body) => ({ method,headers:{'Content-Type':'application/jso
 before(async () => {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL must point to a disposable PostgreSQL test database');
   priorRunwareKey = process.env.RUNWARE_API_KEY;
-  priorRunwareTextModel = process.env.RUNWARE_TEXT_MODEL;
   priorSkillRunner = process.env.SKILL_RUNNER_URL;
+  priorDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  priorDeepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
+  priorDeepSeekTextModel = process.env.DEEPSEEK_TEXT_MODEL;
   delete process.env.RUNWARE_API_KEY;
-  delete process.env.RUNWARE_TEXT_MODEL;
+  delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.DEEPSEEK_BASE_URL;
+  delete process.env.DEEPSEEK_TEXT_MODEL;
   const samplePng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p2sAAAAASUVORK5CYII=';
   skillRequests = [];
   mockRunner = createServer(async (request,response) => {
@@ -85,8 +91,10 @@ after(async () => {
   if (app) await app.close();
   if (mockRunner) await new Promise((resolve) => mockRunner.close(resolve));
   if (priorRunwareKey !== undefined) process.env.RUNWARE_API_KEY = priorRunwareKey;
-  if (priorRunwareTextModel !== undefined) process.env.RUNWARE_TEXT_MODEL = priorRunwareTextModel;
   if (priorSkillRunner !== undefined) process.env.SKILL_RUNNER_URL = priorSkillRunner;
+  if (priorDeepSeekKey !== undefined) process.env.DEEPSEEK_API_KEY = priorDeepSeekKey;
+  if (priorDeepSeekBaseUrl !== undefined) process.env.DEEPSEEK_BASE_URL = priorDeepSeekBaseUrl;
+  if (priorDeepSeekTextModel !== undefined) process.env.DEEPSEEK_TEXT_MODEL = priorDeepSeekTextModel;
 });
 
 test('health and source dictionary come from the backend',async () => {
@@ -100,6 +108,24 @@ test('health and source dictionary come from the backend',async () => {
   const migrated = await db.query(`SELECT t.source,t.status FROM customer_follow_up_tasks t JOIN customers c ON c.id=t.customer_id WHERE c.name='林女士' AND c.source_code='offline_visit' AND c.concern='家庭医疗保障' ORDER BY t.id LIMIT 1`);
   assert.equal(migrated.rows[0]?.source,'legacy_migration','the latest legacy follow-up date is migrated to one pending task');
   assert.equal(migrated.rows[0]?.status,'pending');
+});
+
+test('official product sync exposes the configured companies and blocks disabled companies',async()=>{
+  const meta=await call('/product-center/meta');
+  assert.equal(meta.response.status,200);
+  assert.deepEqual(meta.payload.companies.map((company)=>company.code),['xinhua','aia-life','taikang','ping-an','cpic-life']);
+  assert.ok(meta.payload.companies.every((company)=>company.syncSupported));
+
+  const pause=await call('/product-center/companies/xinhua',json('PATCH',{syncEnabled:false}));
+  assert.equal(pause.response.status,200);
+  assert.equal(pause.payload.syncEnabled,false);
+  const blocked=await call('/product-center/sync-runs',json('POST',{companyCodes:['xinhua']}));
+  assert.equal(blocked.response.status,400);
+  assert.match(blocked.payload.message,/请先启用新华保险同步/);
+  const resume=await call('/product-center/companies/xinhua',json('PATCH',{syncEnabled:true}));
+  assert.equal(resume.response.status,200);
+  const runs=await call('/product-center/sync-runs');
+  assert.deepEqual(runs.payload,[]);
 });
 
 test('customer sources added to the backend dictionary work without code changes',async () => {
@@ -314,7 +340,7 @@ test('topic drafts save per platform, require review checks, support publication
   const edit = await call(`/topics/${topicId}/drafts/${encodeURIComponent('知乎')}`,json('PATCH',{title:'修改后的测试标题',body:'修改后的正文',sources:'https://example.test/source',checks:[true,true,true]}));
   assert.equal(edit.payload.title,'修改后的测试标题');
   const humanized = await call(`/topics/${topicId}/drafts/${encodeURIComponent('知乎')}/humanize`,json('POST',{}));
-  assert.equal(humanized.payload.provider,'humanizer-zh');
+  assert.equal(humanized.payload.provider,'deepseek-flash');
   assert.match(humanized.payload.body,/\[humanizer-zh\]/);
   const priorWechatTheme = (await call('/settings')).payload.content.wechatTheme;
   await call('/settings',json('PATCH',{content:{wechatTheme:'warm'}}));
@@ -419,42 +445,42 @@ test('deleting a topic also deletes its pending draft, review history, asset row
   }
 });
 
-test('GPT network failures return an actionable error and mark generation failed',async () => {
+test('DeepSeek network failures return an actionable error and mark generation failed',async () => {
   const originalFetch = globalThis.fetch;
-  process.env.RUNWARE_API_KEY = 'test-api-key';
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
   globalThis.fetch = async (input,options) => {
-    if (String(input) === 'https://api.runware.ai/v1/responses') throw new TypeError('fetch failed');
+    if (String(input) === 'https://api.deepseek.com/chat/completions') throw new TypeError('fetch failed');
     return originalFetch(input,options);
   };
   try {
     const {response,payload} = await call(`/topics/${topicId}/generate`,json('POST',{}));
     assert.equal(response.status,503);
-    assert.match(payload.message,/无法连接 Runware GPT 服务/);
+    assert.match(payload.message,/无法连接 DeepSeek 服务/);
     assert.match(payload.message,/DNS/);
     const state = await db.query('SELECT generation_status FROM topics WHERE id=$1',[topicId]);
     assert.equal(state.rows[0].generation_status,'failed');
   } finally {
     globalThis.fetch = originalFetch;
-    delete process.env.RUNWARE_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
   }
 });
 
-test('GPT structured-output requests include json in the model input',async () => {
+test('DeepSeek structured-output requests include the configured model and JSON response format',async () => {
   const originalFetch = globalThis.fetch;
-  const previousKey = process.env.RUNWARE_API_KEY;
-  process.env.RUNWARE_API_KEY = 'test-api-key';
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'test-api-key';
   const modelRequests = [];
   globalThis.fetch = async (input,options) => {
-    if (String(input) === 'https://api.runware.ai/v1/responses') {
+    if (String(input) === 'https://api.deepseek.com/chat/completions') {
       const requestBody = JSON.parse(options.body);
       modelRequests.push(requestBody);
       assert.equal(options.headers.Authorization,'Bearer test-api-key');
-      assert.equal(requestBody.model,'openai:gpt@6-luna');
-      assert.equal(requestBody.text.format.type,'json_object');
-      assert.match(JSON.stringify(requestBody.input),/json/i);
-      const title = String(requestBody.input).includes('选定险种：财险') ? '车险三者责任保障怎么读' : '等待期怎么理解';
-      const insuranceType = String(requestBody.input).includes('选定险种：财险') ? '财险' : '健康险';
-      return new Response(JSON.stringify({output_text:JSON.stringify({topics:[{title,category:'保险基础',insuranceType}]})}),{
+      assert.equal(requestBody.model,'deepseek-flash');
+      const requestInput = requestBody.messages[1].content;
+      assert.match(requestInput,/json/i);
+      const title = requestInput.includes('选定险种：财险') ? '车险三者责任保障怎么读' : '等待期怎么理解';
+      const insuranceType = requestInput.includes('选定险种：财险') ? '财险' : '健康险';
+      return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({topics:[{title,category:'保险基础',insuranceType}]})}}]}),{
         status:200,headers:{'Content-Type':'application/json'},
       });
     }
@@ -463,19 +489,19 @@ test('GPT structured-output requests include json in the model input',async () =
   try {
     const {response,payload} = await call('/topics/suggest');
     assert.equal(response.status,200);
-    assert.equal(payload.provider,'openai:gpt@6-luna');
+    assert.equal(payload.provider,'deepseek-flash');
     assert.equal(payload.topics[0].title,'等待期怎么理解');
     assert.equal(payload.topics[0].insuranceType,'健康险');
     const filtered = await call(`/topics/suggest?insuranceType=${encodeURIComponent('财险')}&exclude=${encodeURIComponent(JSON.stringify(['不要重复这个标题']))}`);
     assert.equal(filtered.response.status,200);
     assert.equal(filtered.payload.topics[0].insuranceType,'财险');
     assert.equal(filtered.payload.topics[0].title,'车险三者责任保障怎么读');
-    assert.match(JSON.stringify(modelRequests.at(-1).input),/选定险种：财险/);
-    assert.match(JSON.stringify(modelRequests.at(-1).input),/不要重复这个标题/);
+    assert.match(modelRequests.at(-1).messages[1].content,/选定险种：财险/);
+    assert.match(modelRequests.at(-1).messages[1].content,/不要重复这个标题/);
   } finally {
     globalThis.fetch = originalFetch;
-    if (previousKey === undefined) delete process.env.RUNWARE_API_KEY;
-    else process.env.RUNWARE_API_KEY = previousKey;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
   }
 });
 

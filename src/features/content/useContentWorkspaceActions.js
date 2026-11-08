@@ -9,7 +9,7 @@ export function useContentWorkspaceActions({
   go, dateValue, handleApiError, showSuccess, reloadDashboard,
 }) {
   const {
-    topics, setTopics, selectedTopic, setSelectedTopic, topicModalOpen,
+    contentTypeCode,topics, setTopics, selectedTopic, setSelectedTopic, topicModalOpen,
     setTopicModalOpen, topicForm, platform, setPlatform, drafts, setDrafts,
     platformStatus, setPlatformStatus, checks, setChecks, humanized, setHumanized,
     draftDirty, setDraftDirty, generationBusy, setGenerationBusy, scheduleOpen,
@@ -38,8 +38,31 @@ export function useContentWorkspaceActions({
     return saved;
   };
 
+  const loadDraftVersions = async (topicId,targetPlatform) => {
+    await saveCurrentDraft();
+    return performApiAction(`draft:versions:${topicId}:${targetPlatform}`,() => api.draftVersions(topicId,targetPlatform));
+  };
+  const restoreDraftVersion = async (topicId,targetPlatform,version) => {
+    await saveCurrentDraft();
+    const restored = await performApiAction(`draft:restore:${topicId}:${targetPlatform}`,() => api.restoreDraftVersion(topicId,targetPlatform,version));
+    syncDraftToTopic(topicId,targetPlatform,restored);
+    setDraftDirty(false);
+    messageApi.success(`已恢复为历史版本 v${version}，请重新审核后使用`);
+    return restored;
+  };
+
   const chooseTopic = async (topic) => {
-    if (!topic) return;
+    if (!topic) {
+      try { await saveCurrentDraft(); }
+      catch (error) { handleApiError(error); return; }
+      setSelectedTopic(null);
+      setDrafts({});
+      setPlatformStatus(Object.fromEntries(channelNames.map((channel) => [channel,'草稿'])));
+      setChecks(Object.fromEntries(channelNames.map((channel) => [channel,[false,false,false]])));
+      setHumanized(Object.fromEntries(channelNames.map((channel) => [channel,false])));
+      setDraftDirty(false);
+      return;
+    }
     if (selectedTopic?.id !== topic.id) {
       try { await saveCurrentDraft(); }
       catch (error) { handleApiError(error); return; }
@@ -57,7 +80,7 @@ export function useContentWorkspaceActions({
 
   const createTopic = async (values) => {
     try {
-      const topic = await api.createTopic({ ...values,dueDate:dateValue(values.dueDate) });
+      const topic = await api.createTopic({ ...values,contentTypeCode,dueDate:dateValue(values.dueDate) });
       setTopics((old) => [topic,...old]);
       chooseTopic(topic);
       setTopicModalOpen(false);
@@ -107,7 +130,9 @@ export function useContentWorkspaceActions({
       setTopics((old) => old.map((item) => item.id === result.topic.id ? result.topic : item));
       chooseTopic(result.topic);
       setDraftDirty(false);
-      messageApi.info(result.mode === 'gpt' ? `GPT 已生成文案，humanizer-zh 已润色（${result.provider}）` : '演示文案已生成并经 humanizer-zh 润色；配置 RUNWARE_API_KEY 后可使用 GPT 文案生成。');
+      messageApi.info(result.mode === 'deepseek'
+        ? `DeepSeek 已生成文案，humanizer-zh 已润色（${result.provider}）`
+        : '演示文案已生成并经 humanizer-zh 润色；配置 DEEPSEEK_API_KEY 后可使用 DeepSeek 文案生成。');
     } catch (error) { handleApiError(error); }
     finally { setGenerationBusy(false); }
   };
@@ -239,7 +264,7 @@ export function useContentWorkspaceActions({
       }
       setSuggestions(nextSuggestions);
       setSuggestionsGenerated(nextSuggestions.length > 0);
-      messageApi.info(result.provider === 'demo' ? '当前为示例候选；配置 GPT 后将结合匿名高频问题生成' : `已由 GPT 推荐选题（${result.provider}）`);
+      messageApi.info(result.provider === 'demo' ? '当前为示例候选；配置 DEEPSEEK_API_KEY 后将结合匿名高频问题生成' : `已由 DeepSeek 推荐选题（${result.provider}）`);
     } catch (error) { handleApiError(error); }
   };
 
@@ -265,7 +290,10 @@ export function useContentWorkspaceActions({
 
   const updateVoice = async (values) => {
     try {
-      const updated = await api.updateSettings({ content:{ voice:values.voice } });
+      const content = {...settings.content};
+      if (contentTypeCode === 'insurance_education') content.voice = values.voice;
+      else content.categoryVoices = {...(content.categoryVoices || {}),[contentTypeCode]:values.voice};
+      const updated = await api.updateSettings({ content });
       setSettings(updated);
       setVoiceOpen(false);
       showSuccess('表达设定已保存');
@@ -274,14 +302,17 @@ export function useContentWorkspaceActions({
 
   const confirmDeleteVoice = () => Modal.confirm({
     title:'删除表达设定？',
-    content:'这会清空自定义写作要求，内容生成将继续使用“大话保险”的默认表达规则。',
+    content:'这会清空当前分类的自定义写作要求，生成时继续使用该分类的默认设定。',
     okText:'删除设定',
     cancelText:'保留',
     okButtonProps:{color:'danger',variant:'outlined'},
     cancelButtonProps:{color:'danger',variant:'outlined'},
     onOk:() => performApiAction('settings:voice:delete',async () => {
       try {
-        const updated = await api.updateSettings({content:{voice:''}});
+        const content = {...settings.content};
+        if (contentTypeCode === 'insurance_education') content.voice = '';
+        else content.categoryVoices = {...(content.categoryVoices || {}),[contentTypeCode]:''};
+        const updated = await api.updateSettings({content});
         setSettings(updated);
         voiceForm.setFieldsValue({voice:''});
         setVoiceOpen(false);
@@ -406,5 +437,5 @@ export function useContentWorkspaceActions({
     return () => clearTimeout(timer);
   }, [draftDirty, drafts, platform, selectedTopic?.id]);
 
-  return { syncDraftToTopic, saveCurrentDraft, chooseTopic, createTopic, confirmDeleteTopic, generateDrafts, humanizeDraft, generateCardPlan, updateDraft, updateCardPlan, addCardPlanItem, removeCardPlanItem, updateCheck, approvePlatform, markPublished, openPublishForm, openTopicSuggestions, loadSuggestions, createTopicFromSuggestion, updateSchedule, updateVoice, confirmDeleteVoice, openImageStyles, updateImageStyles, uploadImage, generateImage, switchPlatform, downloadAsset, removeAsset, downloadAssetsAsZip };
+  return { syncDraftToTopic, saveCurrentDraft, chooseTopic, createTopic, confirmDeleteTopic, generateDrafts, humanizeDraft, generateCardPlan, updateDraft, updateCardPlan, addCardPlanItem, removeCardPlanItem, updateCheck, approvePlatform, markPublished, openPublishForm, openTopicSuggestions, loadSuggestions, createTopicFromSuggestion, updateSchedule, updateVoice, confirmDeleteVoice, openImageStyles, updateImageStyles, uploadImage, generateImage, switchPlatform, downloadAsset, removeAsset, downloadAssetsAsZip, loadDraftVersions, restoreDraftVersion };
 }

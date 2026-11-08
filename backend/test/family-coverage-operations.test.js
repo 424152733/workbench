@@ -92,4 +92,15 @@ test('policy coverage labels are replaced within one family only',async () => {
   await operations.linkFamilyPolicy(3,50,{people:[{memberId:8,role:'insured'}],coverageTags:['medical']});
   assert.equal(statements.some(({sql,values})=>sql.startsWith('DELETE FROM family_policy_coverage_tags') && values[0]===3 && values[1]===50),true);
   assert.equal(statements.some(({sql,values})=>sql.startsWith('INSERT INTO family_policy_coverage_tags') && values[0]===3 && values[1]===50 && values[2]==='medical'),true);
+  assert.equal(statements.some(({sql,values})=>sql.startsWith('DELETE FROM family_contract_people') && values[0]===3 && values[1]===50),true);
+  assert.equal(statements.some(({sql,values})=>sql.startsWith('INSERT INTO family_contract_people') && values[0]===3 && values[1]===50),true);
+});
+
+test('legacy family policy unlink delegates to the same policy and PDF unlink operation',async()=>{
+  const operations=new FamilyCoverageOperations();
+  let input;
+  operations.unlinkFamilyPolicySource=async(familyId,source)=>{input={familyId,source};};
+  operations.family=async(id)=>({id});
+  assert.deepEqual(await operations.unlinkFamilyPolicy(3,50),{id:3});
+  assert.deepEqual(input,{familyId:3,source:{policyId:50}});
 });

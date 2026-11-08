@@ -10,12 +10,6 @@ export function demoDrafts(topicTitle) {
   };
 }
 
-export function getResponseText(payload) {
-  if (typeof payload?.output_text === 'string') return payload.output_text;
-  return (payload?.output || []).flatMap((item) => item.content || []).filter((part) => part.type === 'output_text' || part.type === 'text').map((part) => part.text || '').join('\n');
-}
-
-export const runwareTextModel = () => process.env.RUNWARE_TEXT_MODEL || 'openai:gpt@6-luna';
 const stepMarkers = new Map([
   ['一','①'],['二','②'],['三','③'],['四','④'],['五','⑤'],['六','⑥'],['七','⑦'],['八','⑧'],['九','⑨'],['十','⑩'],
   ['1','①'],['2','②'],['3','③'],['4','④'],['5','⑤'],['6','⑥'],['7','⑦'],['8','⑧'],['9','⑨'],['10','⑩'],

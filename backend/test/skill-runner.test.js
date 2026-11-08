@@ -4,17 +4,17 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test, { after, before } from 'node:test';
-import { callRunwareResponses, createSkillRunnerServer, runRunwareImageGenerator } from '../skill-runner.js';
+import { createSkillRunnerServer, runRunwareImageGenerator } from '../skill-runner.js';
 
 const projectDir = path.resolve('.');
 const samplePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p2sAAAAASUVORK5CYII=','base64');
 let server;
 let baseUrl;
 let imageJobs;
-let responseRequests;
+let deepseekRequests;
 let previousRunwareKey;
-let previousRunwareTextModel;
 let previousRunwareImageModel;
+let previousDeepSeekKey;
 
 const sampleCardPlan = (count = 4) => Array.from({length:count},(_unused,index) => ({
   role:['cover','concept','checklist','boundary','summary'][index],
@@ -25,18 +25,18 @@ const sampleCardPlan = (count = 4) => Array.from({length:count},(_unused,index) 
 
 before(async () => {
   previousRunwareKey = process.env.RUNWARE_API_KEY;
-  previousRunwareTextModel = process.env.RUNWARE_TEXT_MODEL;
   previousRunwareImageModel = process.env.RUNWARE_IMAGE_MODEL;
+  previousDeepSeekKey = process.env.DEEPSEEK_API_KEY;
   process.env.RUNWARE_API_KEY = 'test-api-key';
-  delete process.env.RUNWARE_TEXT_MODEL;
   delete process.env.RUNWARE_IMAGE_MODEL;
+  process.env.DEEPSEEK_API_KEY = 'deepseek-test-key';
   imageJobs = [];
-  responseRequests = [];
-  const responses = async (request) => {
-    responseRequests.push(request);
+  deepseekRequests = [];
+  const deepseekResponses = async (request) => {
+    deepseekRequests.push(request);
     const input = JSON.parse(request.input.replace(/\n\nPlease return valid json\.$/i,''));
     if (Array.isArray(input.drafts)) {
-      const drafts = input.drafts.map((draft) => ({platform:draft.platform,text:`${draft.text}（已由 humanizer-zh 润色）`,...(draft.cardPlan ? {cardPlan:draft.cardPlan} : {})}));
+      const drafts = input.drafts.map((draft) => ({platform:draft.platform,text:`${draft.text}（DeepSeek humanizer）`,...(draft.cardPlan ? {cardPlan:draft.cardPlan} : {})}));
       return drafts.length === 1 && ['测试单条文本格式','单平台数组格式','单平台小红书图卡格式'].includes(input.drafts[0].title)
         ? {text:drafts[0].text,...(drafts[0].cardPlan ? {cardPlan:drafts[0].cardPlan} : {})} : {drafts};
     }
@@ -65,7 +65,7 @@ before(async () => {
       await writeFile(image.outputPath,samplePng);
     }
   };
-  server = createSkillRunnerServer({projectDir,token:'runner-test-token',responses,imageGenerator});
+  server = createSkillRunnerServer({projectDir,token:'runner-test-token',deepseekResponses,imageGenerator});
   server.listen(0,'127.0.0.1');
   await once(server,'listening');
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -75,13 +75,13 @@ after(async () => {
   if (server?.listening) await new Promise((resolve) => server.close(resolve));
   if (previousRunwareKey === undefined) delete process.env.RUNWARE_API_KEY;
   else process.env.RUNWARE_API_KEY = previousRunwareKey;
-  if (previousRunwareTextModel === undefined) delete process.env.RUNWARE_TEXT_MODEL;
-  else process.env.RUNWARE_TEXT_MODEL = previousRunwareTextModel;
   if (previousRunwareImageModel === undefined) delete process.env.RUNWARE_IMAGE_MODEL;
   else process.env.RUNWARE_IMAGE_MODEL = previousRunwareImageModel;
+  if (previousDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+  else process.env.DEEPSEEK_API_KEY = previousDeepSeekKey;
 });
 
-test('skill runner health reports installed skills and Runware models',async () => {
+test('skill runner health reports installed skills and separates DeepSeek text from Runware image generation',async () => {
   const response = await fetch(`${baseUrl}/health`);
   const payload = await response.json();
   assert.equal(response.status,200);
@@ -90,7 +90,8 @@ test('skill runner health reports installed skills and Runware models',async () 
   assert.ok(payload.skills.includes('baoyu-article-illustrator'));
   assert.ok(payload.skills.includes('baoyu-image-gen'));
   assert.equal(payload.runwareConfigured,true);
-  assert.equal(payload.textModel,'openai:gpt@6-luna');
+  assert.equal(payload.deepseekConfigured,true);
+  assert.equal(payload.deepseekModel,'deepseek-flash');
   assert.equal(payload.imageModel,'openai:gpt-image@2.5-flare');
 });
 
@@ -102,35 +103,9 @@ test('skill runner requires the configured token and only exposes supported skil
   assert.equal(unsupported.status,400);
 });
 
-test('Runware Responses uses the configured key, GPT-6 Luna, and JSON mode',async () => {
-  const previousFetch = globalThis.fetch;
-  const previousKey = process.env.RUNWARE_API_KEY;
-  const previousModel = process.env.RUNWARE_TEXT_MODEL;
-  process.env.RUNWARE_API_KEY = 'runware-test-key';
-  delete process.env.RUNWARE_TEXT_MODEL;
-  globalThis.fetch = async (input,options) => {
-    assert.equal(String(input),'https://api.runware.ai/v1/responses');
-    assert.equal(options.headers.Authorization,'Bearer runware-test-key');
-    const request = JSON.parse(options.body);
-    assert.equal(request.model,'openai:gpt@6-luna');
-    assert.equal(request.text.format.type,'json_object');
-    assert.match(`${request.instructions}\n${request.input}`,/json/i);
-    return new Response(JSON.stringify({output_text:'{"ok":true}'}),{status:200,headers:{'Content-Type':'application/json'}});
-  };
-  try {
-    assert.deepEqual(await callRunwareResponses({instructions:'Return JSON.',input:'Return JSON.',timeoutMs:5_000}),{ok:true});
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousKey === undefined) delete process.env.RUNWARE_API_KEY;
-    else process.env.RUNWARE_API_KEY = previousKey;
-    if (previousModel === undefined) delete process.env.RUNWARE_TEXT_MODEL;
-    else process.env.RUNWARE_TEXT_MODEL = previousModel;
-  }
-});
-
-test('skill execution requires a Runware API key and reports the missing configuration',async () => {
-  const configuredKey = process.env.RUNWARE_API_KEY;
-  delete process.env.RUNWARE_API_KEY;
+test('skill execution requires a DeepSeek API key and reports the missing configuration',async () => {
+  const configuredKey = process.env.DEEPSEEK_API_KEY;
+  delete process.env.DEEPSEEK_API_KEY;
   try {
     const response = await fetch(`${baseUrl}/run`,{
       method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer runner-test-token'},
@@ -138,13 +113,13 @@ test('skill execution requires a Runware API key and reports the missing configu
     });
     const payload = await response.json();
     assert.equal(response.status,503);
-    assert.match(payload.message,/RUNWARE_API_KEY/);
+    assert.match(payload.message,/DEEPSEEK_API_KEY/);
   } finally {
-    process.env.RUNWARE_API_KEY = configuredKey;
+    process.env.DEEPSEEK_API_KEY = configuredKey;
   }
 });
 
-test('humanizer-zh instructions are sent to GPT and return edited platform drafts',async () => {
+test('humanizer-zh instructions are sent to DeepSeek and return edited platform drafts',async () => {
   const response = await fetch(`${baseUrl}/run`,{
     method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer runner-test-token'},
     body:JSON.stringify({skill:'humanizer-zh',drafts:[
@@ -156,12 +131,68 @@ test('humanizer-zh instructions are sent to GPT and return edited platform draft
   assert.equal(response.status,200);
   assert.equal(payload.provider,'humanizer-zh');
   assert.deepEqual(payload.drafts.map((draft) => draft.platform),['知乎','公众号']);
-  assert.ok(payload.drafts.every((draft) => draft.text.includes('已由 humanizer-zh 润色')));
-  assert.match(responseRequests.at(-1).instructions,/保留信息和确定程度/);
-  assert.match(responseRequests.at(-1).instructions,/humanizer-zh/);
-  assert.match(responseRequests.at(-1).instructions,/不要输出 \*\* 符号/);
-  assert.match(responseRequests.at(-1).instructions,/避免“第一步”“第二步”“第几步”/);
-  assert.match(responseRequests.at(-1).input,/\bjson\b/i);
+  assert.ok(payload.drafts.every((draft) => draft.text.includes('DeepSeek humanizer')));
+  assert.match(deepseekRequests.at(-1).instructions,/保留信息和确定程度/);
+  assert.match(deepseekRequests.at(-1).instructions,/humanizer-zh/);
+  assert.match(deepseekRequests.at(-1).instructions,/不要输出 \*\* 符号/);
+  assert.match(deepseekRequests.at(-1).instructions,/避免“第一步”“第二步”“第几步”/);
+  assert.match(deepseekRequests.at(-1).input,/\bjson\b/i);
+});
+
+test('humanizer-zh uses DeepSeek for any content category',async () => {
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'deepseek-test-key';
+  const previousDeepSeekRequestCount = deepseekRequests.length;
+  try {
+    const response = await fetch(`${baseUrl}/run`,{
+      method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer runner-test-token'},
+      body:JSON.stringify({skill:'humanizer-zh',provider:'deepseek',drafts:[{platform:'知乎',title:'产品解读',text:'只依据确认过的产品资料。'}]}),
+    });
+    const payload = await response.json();
+    assert.equal(response.status,200);
+    assert.match(payload.drafts[0].text,/DeepSeek humanizer/);
+    assert.equal(deepseekRequests.length,previousDeepSeekRequestCount + 1);
+    assert.match(deepseekRequests[0].instructions,/保留信息和确定程度/);
+  } finally {
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
+  }
+});
+
+test('Runware is rejected as a text provider and image planning checks both model keys before planning',async () => {
+  const unsupported = await fetch(`${baseUrl}/run`,{
+    method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer runner-test-token'},
+    body:JSON.stringify({skill:'humanizer-zh',provider:'runware',platform:'知乎',title:'测试标题',text:'测试正文'}),
+  });
+  assert.equal(unsupported.status,400);
+  const configuredKey = process.env.RUNWARE_API_KEY;
+  const deepseekRequestCount = deepseekRequests.length;
+  delete process.env.RUNWARE_API_KEY;
+  try {
+    const response = await fetch(`${baseUrl}/run`,{
+      method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer runner-test-token'},
+      body:JSON.stringify({skill:'baoyu-xhs-images',platform:'小红书',title:'等待期是什么',cardPlan:sampleCardPlan(4),imageMode:'production'}),
+    });
+    const payload = await response.json();
+    assert.equal(response.status,503);
+    assert.match(payload.message,/RUNWARE_API_KEY/);
+    assert.equal(deepseekRequests.length,deepseekRequestCount,'image planning must not spend DeepSeek tokens when image generation is unavailable');
+  } finally {
+    process.env.RUNWARE_API_KEY = configuredKey;
+  }
+});
+
+test('image planning uses DeepSeek while actual image generation stays on Runware GPT Image',async () => {
+  const deepseekRequestCount = deepseekRequests.length;
+  const response = await fetch(`${baseUrl}/run`,{
+    method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer runner-test-token'},
+    body:JSON.stringify({skill:'baoyu-xhs-images',platform:'小红书',title:'等待期是什么',cardPlan:sampleCardPlan(4),imageMode:'test'}),
+  });
+  const payload = await response.json();
+  assert.equal(response.status,200);
+  assert.equal(deepseekRequests.length,deepseekRequestCount + 1);
+  assert.equal(payload.artifacts.length,1);
+  assert.ok(imageJobs.at(-1).images.every((image) => image.provider === 'runware' && image.model === 'openai:gpt-image@2.5-flare'));
 });
 
 test('humanizer-zh preserves and returns the Xiaohongshu card plan',async () => {
@@ -173,7 +204,7 @@ test('humanizer-zh preserves and returns the Xiaohongshu card plan',async () => 
   const payload = await response.json();
   assert.equal(response.status,200);
   assert.deepEqual(payload.cardPlan,plan);
-  assert.match(responseRequests.at(-1).instructions,/保留卡片数量、顺序、role 和每张卡片的要点数量/);
+  assert.match(deepseekRequests.at(-1).instructions,/保留卡片数量、顺序、role 和每张卡片的要点数量/);
   assert.deepEqual(lastResponseInput().drafts[0].cardPlan,plan);
 });
 
@@ -185,7 +216,7 @@ test('single humanizer-zh accepts both JSON response shapes',async () => {
     });
     const payload = await response.json();
     assert.equal(response.status,200);
-    assert.match(payload.text,/已由 humanizer-zh 润色/);
+    assert.match(payload.text,/DeepSeek humanizer/);
   }
 });
 
@@ -196,8 +227,8 @@ test('humanizer-zh accepts a single-draft response when generation sends a one-p
   });
   const payload = await response.json();
   assert.equal(response.status,200);
-  assert.deepEqual(payload.drafts,[{platform:'知乎',text:'用简单的话解释等待期。（已由 humanizer-zh 润色）'}]);
-  assert.match(responseRequests.at(-1).instructions,/即使输入位于 drafts 数组中，也按单条格式返回/);
+  assert.deepEqual(payload.drafts,[{platform:'知乎',text:'用简单的话解释等待期。（DeepSeek humanizer）'}]);
+  assert.match(deepseekRequests.at(-1).instructions,/即使输入位于 drafts 数组中，也按单条格式返回/);
 });
 
 test('single-platform Xiaohongshu generation preserves card plans returned in the single-draft response shape',async () => {
@@ -213,6 +244,7 @@ test('single-platform Xiaohongshu generation preserves card plans returned in th
 });
 
 test('Baoyu production mode plans three to five Xiaohongshu cards before sending prompts to Runware',async () => {
+  const previousJobs = imageJobs.length;
   const response = await fetch(`${baseUrl}/run`,{
     method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer runner-test-token'},
     body:JSON.stringify({skill:'baoyu-xhs-images',platform:'小红书',title:'等待期是什么',cardPlan:sampleCardPlan(4),imageMode:'production',imageOptions:{style:'bold',layout:'comparison',palette:'neon'}}),
@@ -222,15 +254,16 @@ test('Baoyu production mode plans three to five Xiaohongshu cards before sending
   assert.equal(payload.skill,'baoyu-xhs-images');
   assert.equal(payload.artifacts.length,4);
   assert.ok(payload.artifacts.every((artifact) => artifact.mimeType === 'image/png' && artifact.base64 === samplePng.toString('base64')));
-  assert.equal(imageJobs.length,1);
-  assert.equal(imageJobs[0].jobs,2);
-  assert.ok(imageJobs[0].images.every((job) => job.ar === '3:4' && job.provider === 'runware'));
-  for (const promptFile of imageJobs[0].promptContents) {
+  assert.equal(imageJobs.length,previousJobs + 1);
+  const generatedJob = imageJobs.at(-1);
+  assert.equal(generatedJob.jobs,2);
+  assert.ok(generatedJob.images.every((job) => job.ar === '3:4' && job.provider === 'runware'));
+  for (const promptFile of generatedJob.promptContents) {
     assert.match(promptFile,/aspect_ratio: 3:4/);
     assert.match(promptFile,/等待期/);
   }
-  const instructions = responseRequests.at(-1).instructions;
-  assert.match(responseRequests.at(-1).input,/\bjson\b/i);
+  const instructions = deepseekRequests.at(-1).instructions;
+  assert.match(deepseekRequests.at(-1).input,/\bjson\b/i);
   assert.deepEqual(lastResponseInput().style,'bold');
   assert.equal(lastResponseInput().layout,'comparison');
   assert.equal(lastResponseInput().palette,'neon');
@@ -266,7 +299,7 @@ test('Baoyu test mode plans one Xiaohongshu card to keep development runs small'
   assert.equal(lastResponseInput().cardPlan[0].role,'cover');
   assert.equal('text' in lastResponseInput(),false);
   assert.equal(lastResponseInput().imageMode,'test');
-  assert.match(responseRequests.at(-1).instructions,/当前是测试模式，输入中只有封面卡片，必须严格输出 1 张小红书封面图/);
+  assert.match(deepseekRequests.at(-1).instructions,/当前是测试模式，输入中只有封面卡片，必须严格输出 1 张小红书封面图/);
 });
 
 test('Baoyu plans outside the selected Xiaohongshu mode are rejected before any paid image generation',async () => {
@@ -274,7 +307,7 @@ test('Baoyu plans outside the selected Xiaohongshu mode are rejected before any 
   const validationServer = createSkillRunnerServer({
     projectDir,
     token:'xhs-count-mismatch-test-token',
-    responses:async () => ({images:[
+    deepseekResponses:async () => ({images:[
       {slug:'cover',kind:'cover',aspectRatio:'3:4',prompt:'封面图'},
       {slug:'content',kind:'content',aspectRatio:'3:4',prompt:'内容图'},
     ]}),
@@ -311,7 +344,7 @@ test('production mode refuses fewer than three planned cards before any paid ima
   const validationServer = createSkillRunnerServer({
     projectDir,
     token:'xhs-production-count-test-token',
-    responses:async () => ({images:[
+    deepseekResponses:async () => ({images:[
       {slug:'cover',kind:'cover',aspectRatio:'3:4',prompt:'封面图'},
       {slug:'content',kind:'content',aspectRatio:'3:4',prompt:'内容图'},
     ]}),
@@ -333,7 +366,7 @@ test('production mode refuses fewer than three planned cards before any paid ima
 });
 
 function lastResponseInput() {
-  return JSON.parse(responseRequests.at(-1).input.replace(/\n\nPlease return valid json\.$/i,''));
+  return JSON.parse(deepseekRequests.at(-1).input.replace(/\n\nPlease return valid json\.$/i,''));
 }
 
 test('baoyu article illustrator is selected for non-Xiaohongshu platforms',async () => {
@@ -345,11 +378,11 @@ test('baoyu article illustrator is selected for non-Xiaohongshu platforms',async
   assert.equal(response.status,200);
   assert.equal(payload.skill,'baoyu-article-illustrator');
   assert.equal(payload.artifacts.length,2);
-  assert.match(responseRequests.at(-1).instructions,/Analyze articles, identify illustration positions/);
-  assert.match(responseRequests.at(-1).instructions,/references\/prompt-construction\.md/);
-  assert.match(responseRequests.at(-1).instructions,/references\/styles\/watercolor\.md/);
-  assert.match(responseRequests.at(-1).instructions,/references\/palettes\/warm\.md/);
-  assert.doesNotMatch(responseRequests.at(-1).instructions,/references\/styles\/notion\.md/);
+  assert.match(deepseekRequests.at(-1).instructions,/Analyze articles, identify illustration positions/);
+  assert.match(deepseekRequests.at(-1).instructions,/references\/prompt-construction\.md/);
+  assert.match(deepseekRequests.at(-1).instructions,/references\/styles\/watercolor\.md/);
+  assert.match(deepseekRequests.at(-1).instructions,/references\/palettes\/warm\.md/);
+  assert.doesNotMatch(deepseekRequests.at(-1).instructions,/references\/styles\/notion\.md/);
   assert.deepEqual(lastResponseInput().type,'timeline');
   assert.equal(lastResponseInput().style,'watercolor');
   assert.equal(lastResponseInput().palette,'warm');
@@ -369,7 +402,7 @@ test('GPT-Image-2.5 Flare prompts over the model limit are rejected before image
   const validationServer = createSkillRunnerServer({
     projectDir,
     token:'gpt-image-prompt-limit-test-token',
-    responses:async () => ({images:[{slug:'long-prompt',kind:'cover',aspectRatio:'3:4',prompt:'图'.repeat(32_001)}]}),
+    deepseekResponses:async () => ({images:[{slug:'long-prompt',kind:'cover',aspectRatio:'3:4',prompt:'图'.repeat(32_001)}]}),
     imageGenerator:async () => { imageGenerationCalled = true; },
   });
   validationServer.listen(0,'127.0.0.1');

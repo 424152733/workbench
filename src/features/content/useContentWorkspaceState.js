@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Form } from 'antd';
 
 export function useContentWorkspaceState() {
+  const [contentTypeCode,setContentTypeCode] = useState('insurance_education');
+  const [contentProductPrefill,setContentProductPrefill] = useState(null);
   const [topics, setTopics] = useState([]);
   const [selectedTopic, setSelectedTopic] = useState(null);
   const [topicModalOpen, setTopicModalOpen] = useState(false);
@@ -31,7 +33,7 @@ export function useContentWorkspaceState() {
   const [articlePreviewOpen, setArticlePreviewOpen] = useState(false);
 
   return {
-    topics,setTopics,selectedTopic,setSelectedTopic,topicModalOpen,setTopicModalOpen,topicForm,platform,setPlatform,
+    contentTypeCode,setContentTypeCode,contentProductPrefill,setContentProductPrefill,topics,setTopics,selectedTopic,setSelectedTopic,topicModalOpen,setTopicModalOpen,topicForm,platform,setPlatform,
     drafts,setDrafts,platformStatus,setPlatformStatus,checks,setChecks,humanized,setHumanized,draftDirty,setDraftDirty,
     generationBusy,setGenerationBusy,scheduleOpen,setScheduleOpen,scheduleForm,voiceOpen,setVoiceOpen,voiceForm,
     imageStylesOpen,setImageStylesOpen,imageStylesForm,suggestionsOpen,setSuggestionsOpen,suggestions,setSuggestions,

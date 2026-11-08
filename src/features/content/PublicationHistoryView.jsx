@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Descriptions, Drawer, Empty, Form, Input, Modal, Pagination, Select, Space, Spin, Table, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { ArrowLeftOutlined, EditOutlined, LinkOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons';
 import { PanelHeading } from '../../components/PanelHeading.jsx';
+import { CONTENT_TYPES, CASE_KIND_NAMES } from './content-types.js';
 
 const { Title, Text, Paragraph } = Typography;
 const platformOptions = ['知乎','小红书','公众号'].map((value) => ({value,label:value}));
@@ -11,8 +12,8 @@ const dateTime = (value) => value ? new Date(value).toLocaleString('zh-CN',{time
 const safeExternalUrl = (value) => { try { const url = new URL(value); return ['http:','https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null; } catch { return null; } };
 const originTag = (origin) => <Tooltip title={origin === 'legacy' ? '发布记录模块上线时，按旧稿件保存的发布日期和链接补入；当时的正文与配图无法追溯。' : '在内容工作台登记实际发布时创建，保存了登记时的稿件和选中配图。'}><Tag>{origin === 'legacy' ? '旧数据导入' : '手动登记'}</Tag></Tooltip>;
 
-function usePublicationHistory(api,onChanged) {
-  const [filters,setFilters] = useState(() => { const query = new URLSearchParams(window.location.search); return {platform:'',from:query.get('from') || '',to:query.get('to') || '',keyword:'',status:'active',topicId:query.get('topicId') || '',page:1,pageSize:10}; });
+function usePublicationHistory(api,onChanged,contentTypeCode) {
+  const [filters,setFilters] = useState(() => { const query = new URLSearchParams(window.location.search); return {type:query.get('type') || contentTypeCode || '',platform:'',from:query.get('from') || '',to:query.get('to') || '',keyword:'',status:'active',topicId:query.get('topicId') || '',page:1,pageSize:10}; });
   const [list,setList] = useState({items:[],total:0});
   const [selectedId,setSelectedId] = useState(null);
   const [detail,setDetail] = useState(null);
@@ -63,8 +64,8 @@ function usePublicationHistory(api,onChanged) {
   return {filters,change,setFilters,list,loading,error,reload,selectedId,setSelectedId,detail,setDetail,detailLoading,detailError,saving,loadDetail,mutate};
 }
 
-export function PublicationHistoryView({api,go,onChanged}) {
-  const history = usePublicationHistory(api,onChanged);
+export function PublicationHistoryView({api,go,onChanged,contentTypeCode}) {
+  const history = usePublicationHistory(api,onChanged,contentTypeCode);
   const {filters,change,setFilters,list,loading,error,reload,selectedId,setSelectedId,detail,setDetail,detailLoading,detailError,saving,loadDetail,mutate} = history;
   const [editOpen,setEditOpen] = useState(false);
   const [voidOpen,setVoidOpen] = useState(false);
@@ -87,15 +88,16 @@ export function PublicationHistoryView({api,go,onChanged}) {
     {title:'内容',dataIndex:'title',key:'title',render:(_value,item) => <button className="publication-title-link" onClick={() => loadDetail(item.id)}><strong>{item.title || item.topicTitle}</strong><small>{item.topicTitle}</small></button>},
     {title:'平台',dataIndex:'platform',key:'platform',width:100},
     {title:'实际发布',key:'publishedOn',width:150,render:(_value,item) => <span>{item.publishedOn}{item.publishedTime ? ` ${item.publishedTime}` : ''}</span>},
-    {title:'来源 / 状态',key:'state',width:160,render:(_value,item) => <Space size={4}>{originTag(item.origin)}{item.status === 'voided' ? <Tag color="red">已作废</Tag> : null}</Space>},
+    {title:'分类 / 来源',key:'state',width:205,render:(_value,item) => <Space size={4}><Tag>{CONTENT_TYPES.find((type) => type.code === item.contentTypeCode)?.name || item.contentTypeName || '大话保险'}</Tag>{originTag(item.origin)}{item.status === 'voided' ? <Tag color="red">已作废</Tag> : null}</Space>},
     {title:'链接',key:'link',width:120,render:(_value,item) => safeExternalUrl(item.publishUrl) ? <a href={safeExternalUrl(item.publishUrl)} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>打开链接 <LinkOutlined /></a> : <Text type="secondary">未填写</Text>},
     {title:'操作',key:'actions',width:95,render:(_value,item) => <Button size="small" color="primary" variant="outlined" onClick={() => loadDetail(item.id)}>查看详情</Button>},
   ];
   return <div className="publication-page">
-    <div className="page-heading publication-heading"><div><Title level={2}>发布记录</Title><Text className="muted">每次实际发布留一条记录，稿件与配图按登记时留存。</Text></div><Button color="primary" variant="outlined" icon={<ArrowLeftOutlined />} onClick={() => go('content')}>返回内容工作台</Button></div>
+    <div className="page-heading publication-heading"><div><Title level={2}>发布记录</Title><Text className="muted">每次实际发布留一条记录，稿件与配图按登记时留存。</Text></div><Button color="primary" variant="outlined" icon={<ArrowLeftOutlined />} onClick={() => go('content',{type:filters.type || contentTypeCode})}>返回内容工作台</Button></div>
     <Card className="panel-card publication-list-card" title={<PanelHeading title="历史发布" subtitle="默认只显示有效记录；作废记录可通过状态筛选查看" />}>
       <div className="publication-filters">
         <Input className="publication-search-input" aria-label="搜索发布记录" allowClear prefix={<SearchOutlined />} placeholder="搜索选题或标题" value={filters.keyword} onChange={(event) => change({keyword:event.target.value})} />
+        <Select aria-label="筛选内容分类" value={filters.type || ''} options={[{value:'',label:'全部分类'},...CONTENT_TYPES.map((type) => ({value:type.code,label:type.name}))]} onChange={(type) => { change({type}); const query = new URLSearchParams(window.location.search); type ? query.set('type',type) : query.delete('type'); window.history.replaceState(window.history.state,'',`${window.location.pathname}?${query}`); }} />
         <Select aria-label="筛选平台" value={filters.platform} options={[{value:'',label:'全部平台'},...platformOptions]} onChange={(platform) => change({platform})} />
         <Input aria-label="开始日期" type="date" value={filters.from} onChange={(event) => change({from:event.target.value})} />
         <Input aria-label="结束日期" type="date" value={filters.to} onChange={(event) => change({to:event.target.value})} />
@@ -107,7 +109,7 @@ export function PublicationHistoryView({api,go,onChanged}) {
       <div className="publication-mobile-list">
         {loading ? <Spin /> : list.items.map((item) => <article className="publication-mobile-card" key={item.id}>
           <button className="publication-title-link" onClick={() => loadDetail(item.id)}><strong>{item.title || item.topicTitle}</strong><small>{item.topicTitle}</small></button>
-          <Space wrap size={4}><Tag>{item.platform}</Tag>{originTag(item.origin)}{item.status === 'voided' ? <Tag color="red">已作废</Tag> : null}</Space>
+          <Space wrap size={4}><Tag>{CONTENT_TYPES.find((type) => type.code === item.contentTypeCode)?.name || item.contentTypeName || '大话保险'}</Tag><Tag>{item.platform}</Tag>{originTag(item.origin)}{item.status === 'voided' ? <Tag color="red">已作废</Tag> : null}</Space>
           <Text>{item.publishedOn}{item.publishedTime ? ` ${item.publishedTime}` : ''}</Text>
           <Space wrap>{safeExternalUrl(item.publishUrl) ? <a href={safeExternalUrl(item.publishUrl)} target="_blank" rel="noopener noreferrer">打开链接 <LinkOutlined /></a> : <Text type="secondary">未填写链接</Text>}<Button size="small" color="primary" variant="outlined" onClick={() => loadDetail(item.id)}>查看详情</Button></Space>
         </article>)}
@@ -122,6 +124,7 @@ export function PublicationHistoryView({api,go,onChanged}) {
         <div className="publication-detail-heading"><Title level={4}>{detail.title || detail.topicTitle}</Title><Space>{originTag(detail.origin)}{detail.status === 'voided' ? <Tag color="red">已作废</Tag> : <Tag color="green">有效记录</Tag>}</Space></div>
         <Descriptions bordered size="small" column={1} items={[
           {key:'topic',label:'选题',children:detail.topicTitle},
+          {key:'contentType',label:'内容分类',children:CONTENT_TYPES.find((type) => type.code === detail.contentTypeCode)?.name || detail.contentTypeName || '大话保险'},
           {key:'platform',label:'平台',children:detail.platform},
           {key:'day',label:'实际发布日期',children:`${detail.publishedOn}${detail.publishedTime ? ` ${detail.publishedTime}` : ''}`},
           {key:'recorded',label:'登记时间',children:dateTime(detail.recordedAt)},
@@ -130,7 +133,7 @@ export function PublicationHistoryView({api,go,onChanged}) {
         ]} />
         {detail.status === 'active' ? <Space className="publication-detail-actions" wrap><Button size="small" color="primary" variant="outlined" icon={<EditOutlined />} onClick={openEdit}>更正发布信息</Button><Button size="small" color="danger" variant="outlined" onClick={() => { voidForm.setFieldsValue({reason:'',requestKey:crypto.randomUUID()}); setVoidOpen(true); }}>作废记录</Button></Space> : null}
         <Title level={5}>登记时的工作台稿件</Title>
-        {detail.contentSnapshot ? <><Text className="muted">这是登记时工作台保存的稿件，平台上的最终内容请以发布链接为准。</Text><Title level={5}>{detail.contentSnapshot.title}</Title>{detail.contentSnapshot.summary ? <Paragraph>{detail.contentSnapshot.summary}</Paragraph> : null}<Paragraph className="publication-snapshot-body">{detail.contentSnapshot.body}</Paragraph>{detail.contentSnapshot.hashtags ? <Paragraph>{detail.contentSnapshot.hashtags}</Paragraph> : null}{detail.contentSnapshot.sources ? <Text className="muted">资料来源：{detail.contentSnapshot.sources}</Text> : null}</> : <Alert type="info" showIcon title="历史稿件内容不可追溯" description="旧数据只保存了可确认的日期与链接，无法还原当时的正文和配图。" />}
+        {detail.contentSnapshot ? <><Text className="muted">这是登记时工作台保存的稿件，平台上的最终内容请以发布链接为准。</Text>{detail.contentSnapshot.sourceContext?.caseKind ? <Tag color="blue">{CASE_KIND_NAMES[detail.contentSnapshot.sourceContext.caseKind] || '案例'}</Tag> : null}<Title level={5}>{detail.contentSnapshot.title}</Title>{detail.contentSnapshot.summary ? <Paragraph>{detail.contentSnapshot.summary}</Paragraph> : null}<Paragraph className="publication-snapshot-body">{detail.contentSnapshot.body}</Paragraph>{detail.contentSnapshot.hashtags ? <Paragraph>{detail.contentSnapshot.hashtags}</Paragraph> : null}{detail.contentSnapshot.sources ? <Text className="muted">资料来源：{detail.contentSnapshot.sources}</Text> : null}</> : <Alert type="info" showIcon title="历史稿件内容不可追溯" description="旧数据只保存了可确认的日期与链接，无法还原当时的正文和配图。" />}
         {detail.assets?.length ? <><Title level={5}>登记时使用的配图</Title><div className="publication-assets">{detail.assets.map((asset) => <figure key={asset.id}><img src={api.asset(asset.id)} alt={asset.fileName} loading="lazy" /><figcaption>{asset.fileName}</figcaption></figure>)}</div></> : null}
         <Title level={5}>操作记录</Title><Timeline items={(detail.events || []).map((event) => ({content:<div><Text strong>{actionNames[event.action] || event.action}</Text><Text className="muted"> · {dateTime(event.createdAt)}</Text>{event.reason ? <Paragraph>原因：{event.reason}</Paragraph> : null}{event.action === 'corrected' ? <Paragraph>更正前：{event.previous?.publishedOn || '—'} {event.previous?.publishedTime || ''} {event.previous?.publishUrl || '无链接'}<br />更正后：{event.next?.publishedOn || '—'} {event.next?.publishedTime || ''} {event.next?.publishUrl || '无链接'}{Array.isArray(event.previous?.assetIds) && Array.isArray(event.next?.assetIds) && JSON.stringify(event.previous.assetIds) !== JSON.stringify(event.next.assetIds) ? <><br />配图：{event.previous.assetIds.length} 张 → {event.next.assetIds.length} 张</> : null}</Paragraph> : null}</div>}))} />
       </div> : null}

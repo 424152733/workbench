@@ -3,6 +3,7 @@ export const pagePaths = Object.freeze({
   clients: '/clients',
   content: '/content',
   products: '/products',
+  workCalendar: '/work-calendar',
 });
 
 const pagesByPath = Object.freeze(Object.fromEntries(
@@ -29,10 +30,16 @@ export const parseWorkbenchLocation = (location) => {
   }
   const page = pagesByPath[pathname] || 'home';
   const requestedView = search.get('view');
+  const requestedType = search.get('type');
+  const contentTypeCode = ['insurance_education','product_explainer','customer_case'].includes(requestedType) ? requestedType : 'insurance_education';
+  const requestedTopicId = search.get('topicId');
+  const topicId = requestedTopicId && /^[a-zA-Z0-9-]{1,80}$/.test(requestedTopicId) ? requestedTopicId : null;
+  const requestedProductId = search.get('productId');
+  const productId = /^\d+$/.test(requestedProductId || '') && Number(requestedProductId) > 0 ? Number(requestedProductId) : null;
   const view = page === 'clients'
     ? (['tasks','services','families','analysis'].includes(requestedView) ? requestedView : 'customers')
     : page === 'content' && requestedView === 'publications' ? 'publications' : 'workspace';
-  return {page,customerId:null,familyId:null,returnFamilyId:null,view};
+  return {page,customerId:null,familyId:null,returnFamilyId:null,view,contentTypeCode,topicId,productId};
 };
 
 export const pageForPath = (pathname) => parseWorkbenchLocation({pathname}).page;

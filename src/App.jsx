@@ -39,13 +39,11 @@ import {
   ArrowDownOutlined,
   ArrowRightOutlined,
   BellOutlined,
-  CalendarOutlined,
   CheckCircleFilled,
   CheckOutlined,
   ClockCircleOutlined,
   CopyOutlined,
   CustomerServiceOutlined,
-  DatabaseOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
@@ -92,6 +90,7 @@ const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage.jsx'
 const ClientsPage = lazy(() => import('./features/customers/ClientsPage.jsx').then((module) => ({ default:module.ClientsPage })));
 const ContentPage = lazy(() => import('./features/content/ContentPage.jsx').then((module) => ({ default:module.ContentPage })));
 const ProductCenterPage = lazy(() => import('./features/products/ProductCenterPage.jsx').then((module) => ({ default:module.ProductCenterPage })));
+const WorkCalendarPage = lazy(() => import('./features/work-calendar/WorkCalendarPage.jsx').then((module) => ({ default:module.WorkCalendarPage })));
 const CustomerDetailPage = lazy(() => import('./features/customers/CustomerDetailPage.jsx').then((module) => ({ default:module.CustomerDetailPage })));
 const FamilyWorkspacePage = lazy(() => import('./features/customers/FamilyWorkspacePage.jsx').then((module) => ({ default:module.FamilyWorkspacePage })));
 
@@ -109,10 +108,12 @@ function App() {
   const { apiLoading, performApiAction } = useApiAction();
   const initialPathRef = useRef(window.location.pathname);
   const hasNavigatedRef = useRef(false);
+  const contentRouteRef = useRef({topics:[],chooseTopic:null});
   const [activeNav, setActiveNav] = useState(() => pageForPath(window.location.pathname));
   const [contentView,setContentView] = useState(() => parseWorkbenchLocation(window.location).page === 'content' ? parseWorkbenchLocation(window.location).view : 'workspace');
   const [customerRouteId,setCustomerRouteId] = useState(() => parseWorkbenchLocation(window.location).customerId);
   const [familyRouteId,setFamilyRouteId] = useState(() => parseWorkbenchLocation(window.location).familyId);
+  const [familyRefreshVersion,setFamilyRefreshVersion] = useState(0);
   const [customerReturnFamilyId,setCustomerReturnFamilyId] = useState(() => parseWorkbenchLocation(window.location).returnFamilyId);
   const customerWorkspace = useCustomerWorkspaceState();
   const { clients,setClients,selectedClient,setSelectedClient,clientQuery,setClientQuery,sourceFilter,setSourceFilter,clientView,setClientView,followUpTaskFilter,setFollowUpTaskFilter,followUpTaskSearch,setFollowUpTaskSearch,followUpTaskPage,setFollowUpTaskPage,followUpTaskPageData,setFollowUpTaskPageData,followUpTaskModalOpen,setFollowUpTaskModalOpen,followUpTaskMode,setFollowUpTaskMode,followUpTaskCustomerId,setFollowUpTaskCustomerId,followUpTaskServiceItemId,setFollowUpTaskServiceItemId,activeFollowUpTask,setActiveFollowUpTask,followUpTaskForm,completeTaskModalOpen,setCompleteTaskModalOpen,completeTaskForm,cancelTaskModalOpen,setCancelTaskModalOpen,cancelTaskTarget,setCancelTaskTarget,cancelTaskForm,sourceOptions,setSourceOptions } = customerWorkspace;
@@ -126,7 +127,7 @@ function App() {
   });
   const { clientModalOpen,setClientModalOpen,clientForm,clientEditOpen,setClientEditOpen,clientEditForm,policyModalOpen,setPolicyModalOpen,policyForm,followUpModalOpen,setFollowUpModalOpen,followUpForm } = customerWorkspace;
   const contentWorkspace = useContentWorkspaceState();
-  const { topics,setTopics,selectedTopic,setSelectedTopic,topicModalOpen,setTopicModalOpen,topicForm,platform,setPlatform,drafts,setDrafts,platformStatus,setPlatformStatus,checks,setChecks,humanized,setHumanized,generationBusy,setGenerationBusy } = contentWorkspace;
+  const { contentTypeCode,setContentTypeCode,contentProductPrefill,setContentProductPrefill,topics,setTopics,selectedTopic,setSelectedTopic,topicModalOpen,setTopicModalOpen,topicForm,platform,setPlatform,drafts,setDrafts,platformStatus,setPlatformStatus,checks,setChecks,humanized,setHumanized,generationBusy,setGenerationBusy } = contentWorkspace;
   const [settings, setSettings] = useState({ content: { autoEnabled: false, frequencyDays: 2, runAt: '09:00', voice: '',imageStyles:defaultImageStyles,wechatTheme:'clean',xhsImageMode:defaultXhsImageMode }, preferences: { displayName: '保险顾问', startPage: 'home', menuPosition:'left', notifications: true } });
   const { scheduleOpen,setScheduleOpen,scheduleForm,voiceOpen,setVoiceOpen,voiceForm,imageStylesOpen,setImageStylesOpen,imageStylesForm } = contentWorkspace;
   const [preferencesOpen, setPreferencesOpen] = useState(false);
@@ -153,6 +154,7 @@ function App() {
     setSelectedClient((old) => old?.id === customer.id ? customer : old);
     setDashboard(summary);
     setNotifications(noticeList);
+    setFamilyRefreshVersion((version) => version+1);
     if (activeNav === 'clients' && clientView === 'tasks') await customerActions.loadFollowUpTaskList();
   }
 
@@ -172,10 +174,16 @@ function App() {
       if (initialPathRef.current === '/' && !hasNavigatedRef.current) {
         go(userSettings.preferences?.startPage || 'home',{replace:true});
       }
-      if (topicList[0]) {
-        const topicDrafts = topicList[0].drafts || {};
-        setSelectedTopic(topicList[0]);
-        setPlatform(platformsForTopic(topicList[0])[0]);
+      const initialRoute = parseWorkbenchLocation(window.location);
+      const initialContentType = initialRoute.contentTypeCode;
+      setContentTypeCode(initialContentType);
+      setContentProductPrefill(initialRoute.productId);
+      if (initialRoute.productId && initialContentType === 'product_explainer') setTopicModalOpen(true);
+      const initialTopic = topicList.find((topic) => topic.id === initialRoute.topicId) || topicList.find((topic) => (topic.contentTypeCode || 'insurance_education') === initialContentType);
+      if (initialTopic) {
+        const topicDrafts = initialTopic.drafts || {};
+        setSelectedTopic(initialTopic);
+        setPlatform(platformsForTopic(initialTopic)[0]);
         setDrafts(topicDrafts);
         setPlatformStatus(Object.fromEntries(channelNames.map((channel) => [channel,topicDrafts[channel]?.status || '草稿'])));
         setChecks(Object.fromEntries(channelNames.map((channel) => [channel,topicDrafts[channel]?.checks || [false,false,false]])));
@@ -200,6 +208,13 @@ function App() {
       hasNavigatedRef.current = true;
       if (page === 'clients') setClientView(route.view);
       setContentView(page === 'content' ? route.view : 'workspace');
+      if (page === 'content') {
+        setContentTypeCode(route.contentTypeCode);
+        setContentProductPrefill(route.productId);
+        setTopicModalOpen(Boolean(route.productId && route.contentTypeCode === 'product_explainer'));
+        const currentContentRoute = contentRouteRef.current;
+        currentContentRoute.chooseTopic?.(currentContentRoute.topics.find((topic) => topic.id === route.topicId) || currentContentRoute.topics.find((topic) => (topic.contentTypeCode || 'insurance_education') === route.contentTypeCode) || null);
+      }
       setCustomerRouteId(route.customerId);
       setFamilyRouteId(route.familyId);
       setCustomerReturnFamilyId(route.returnFamilyId);
@@ -244,18 +259,30 @@ function App() {
     };
   },[backendStatus,dashboardMonth]);
 
-  const go = (page,{replace = false,view,customerId,familyId,fromFamilyId,topicId,from,to} = {}) => {
+  const go = (page,{replace = false,view,customerId,familyId,fromFamilyId,topicId,productId,from,to,type} = {}) => {
     const nextPage = isWorkbenchPage(page) ? page : 'home';
     const nextPath = customerId != null ? pathForCustomer(customerId,fromFamilyId) : familyId != null ? pathForFamily(familyId) : pathForPage(nextPage);
     if (customerId == null && (customerRouteId || familyRouteId)) setSelectedClient(null);
     if (view && nextPage === 'clients') setClientView(view);
-    if (nextPage === 'content') setContentView(view === 'publications' ? 'publications' : 'workspace');
+    const nextContentType = type || contentTypeCode;
+    if (nextPage === 'content') {
+      setContentView(view === 'publications' ? 'publications' : 'workspace');
+      setContentTypeCode(nextContentType);
+      setContentProductPrefill(productId || null);
+      if (productId && nextContentType === 'product_explainer') setTopicModalOpen(true);
+      if (topicId) contentActions.chooseTopic(topics.find((topic) => topic.id === String(topicId)) || null);
+    }
     const nextClientView = view || clientView;
     const publicationQuery = new URLSearchParams({view:'publications'});
+    if (nextContentType !== 'insurance_education') publicationQuery.set('type',nextContentType);
     if (topicId) publicationQuery.set('topicId',String(topicId));
     if (from) publicationQuery.set('from',from);
     if (to) publicationQuery.set('to',to);
-    const nextUrl = `${nextPath}${nextPage === 'clients' && !customerId && !familyId && ['tasks','services','families','analysis'].includes(nextClientView) ? `?view=${nextClientView}` : nextPage === 'content' && view === 'publications' ? `?${publicationQuery}` : ''}`;
+    const contentQuery = new URLSearchParams();
+    if (nextContentType !== 'insurance_education') contentQuery.set('type',nextContentType);
+    if (nextPage === 'content' && view !== 'publications' && topicId) contentQuery.set('topicId',String(topicId));
+    if (nextPage === 'content' && view !== 'publications' && productId) contentQuery.set('productId',String(productId));
+    const nextUrl = `${nextPath}${nextPage === 'clients' && !customerId && !familyId && ['tasks','services','families','analysis'].includes(nextClientView) ? `?view=${nextClientView}` : nextPage === 'content' && view === 'publications' ? `?${publicationQuery}` : nextPage === 'content' && contentQuery.size ? `?${contentQuery}` : ''}`;
     if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
       window.history[replace ? 'replaceState' : 'pushState']({page:nextPage},'',nextUrl);
     }
@@ -302,6 +329,7 @@ function App() {
     api, performApiAction, messageApi, workspace:contentWorkspace, settings,
     setSettings, go, dateValue, handleApiError, showSuccess, reloadDashboard,
   });
+  contentRouteRef.current = {topics,chooseTopic:contentActions.chooseTopic};
   const {
     chooseTopic, createTopic,
     confirmDeleteTopic, generateDrafts, humanizeDraft, generateCardPlan,
@@ -309,7 +337,7 @@ function App() {
     updateCheck, approvePlatform, markPublished, openPublishForm, openTopicSuggestions,
     loadSuggestions, createTopicFromSuggestion, updateSchedule, updateVoice,
     confirmDeleteVoice, openImageStyles, updateImageStyles, uploadImage,
-    generateImage, switchPlatform, downloadAsset, removeAsset, downloadAssetsAsZip,
+    generateImage, switchPlatform, downloadAsset, removeAsset, downloadAssetsAsZip, loadDraftVersions, restoreDraftVersion,
   } = contentActions;
   const openPreferences = () => {
     preferencesForm.setFieldsValue({...settings.preferences,menuPosition:settings.preferences?.menuPosition || 'left'});
@@ -339,24 +367,24 @@ function App() {
   const pageTitle = {
     home: ['工作首页', '今天的跟进和内容审核都在这里。'],
     clients: ['客户与保单', '线索、客户档案、保单和服务待办。'],
-    content: ['大话保险', '把保险讲明白，再把每个平台的内容审核好。'],
-    products: ['产品中心', '管理新华保险产品资料，整理可核对的产品解读。'],
+    content: ['内容工作台', '整理选题、稿件、配图和发布记录。'],
+    products: ['产品中心', '同步保险公司在售产品，整理并核对官方资料。'],
+    workCalendar: ['工作行事历', '安排客户活动、服务和团队事项。'],
   }[activeNav];
 
   const menuItems = [
     { key: 'home', icon: <HomeOutlined />, label: '工作首页' },
     { key: 'clients', icon: <TeamOutlined />, label: '客户与保单' },
-    { key: 'content', icon: <FileTextOutlined />, label: '大话保险' },
-    { key: 'products', icon: <DatabaseOutlined />, label: '产品中心' },
+    { key: 'content', icon: <FileTextOutlined />, label: '内容工作台' },
   ];
   const menuPosition = settings.preferences?.menuPosition === 'top' ? 'top' : 'left';
   const topMenuEnabled = menuPosition === 'top';
 
   const dashboardPageProps = { dashboard,topics,settings,setTopicModalOpen,go,dashboardMonth,apiLoading,setDashboardMonth,chooseTopic,selectedTopic,performApiAction,openCustomer,openCompleteTaskModal,openRescheduleTaskModal,clients,openServiceFromDashboard,openPolicyReminder };
   const clientPageProps = { clients,dashboard,clientView,changeClientView,filteredClients,apiLoading,clientQuery,setClientQuery,sourceFilter,setSourceFilter,sourceOptions,followUpTaskSearch,setFollowUpTaskSearch,setFollowUpTaskPage,followUpTaskFilter,setFollowUpTaskFilter,followUpTaskPageData,followUpTaskPage,topicForm,setTopicModalOpen,openTopicSuggestions,channelNames,setClientModalOpen,performApiAction,handleApiError,api,changeStage,openCustomer,openCompleteTaskModal,openRescheduleTaskModal,cancelFollowUpTask,serviceWorkspace,go,showSuccess };
-  const contentPageProps = { api,contentView,selectedTopic,drafts,platform,platformStatus,checks,settings,apiLoading,generationBusy,assetBusy,imagePreviewOpen,imagePreviewIndex,articlePreviewOpen,setImagePreviewIndex,setImagePreviewOpen,downloadAsset,removeAsset,downloadAssetsAsZip,switchPlatform,generateDrafts,performApiAction,humanizeDraft,updateDraft,generateCardPlan,updateCardPlan,removeCardPlanItem,addCardPlanItem,updateCheck,copyText,approvePlatform,openImageStyles,setArticlePreviewOpen,generateImage,uploadImage,publishForm,openPublishForm,topics,dashboard,dashboardMonth,channelNames,openCalendar,setTopicModalOpen,chooseTopic,go,confirmDeleteTopic,openTopicSuggestions,scheduleForm,setScheduleOpen,voiceForm,setVoiceOpen,insuranceTypeOptions,xhsCardRoleOptions,onPublicationsChanged:reloadDashboard };
+  const contentPageProps = { api,contentView,contentTypeCode,contentProductPrefill,setContentTypeCode,topicForm,selectedTopic,drafts,platform,platformStatus,checks,settings,apiLoading,generationBusy,assetBusy,imagePreviewOpen,imagePreviewIndex,articlePreviewOpen,setImagePreviewIndex,setImagePreviewOpen,downloadAsset,removeAsset,downloadAssetsAsZip,switchPlatform,generateDrafts,performApiAction,humanizeDraft,updateDraft,generateCardPlan,updateCardPlan,removeCardPlanItem,addCardPlanItem,updateCheck,copyText,approvePlatform,openImageStyles,setArticlePreviewOpen,generateImage,uploadImage,publishForm,openPublishForm,topics,dashboard,dashboardMonth,channelNames,openCalendar,setTopicModalOpen,chooseTopic,go,confirmDeleteTopic,openTopicSuggestions,scheduleForm,setScheduleOpen,voiceForm,setVoiceOpen,insuranceTypeOptions,xhsCardRoleOptions,loadDraftVersions,restoreDraftVersion,onPublicationsChanged:reloadDashboard };
   const customerOverlayProps = { selectedClient,setSelectedClient,openClientEdit,apiLoading,performApiAction,verifyPolicy,setPolicyModalOpen,openFollowUpTaskModal,openCompleteTaskModal,openRescheduleTaskModal,cancelFollowUpTask,setFollowUpModalOpen,clientEditOpen,setClientEditOpen,clientEditForm,saveClientEdit,clientModalOpen,setClientModalOpen,clientForm,saveClient,sourceOptions,policyModalOpen,policyForm,savePolicy,followUpModalOpen,followUpForm,saveFollowUp,followUpTaskMode,followUpTaskModalOpen,setFollowUpTaskModalOpen,followUpTaskForm,saveFollowUpTaskForm,activeFollowUpTask,completeTaskModalOpen,setCompleteTaskModalOpen,completeTaskForm,completeFollowUpTask,cancelTaskModalOpen,setCancelTaskModalOpen,cancelTaskTarget,cancelTaskForm,saveCancelFollowUpTask,showCustomerDrawer:!customerRouteId && !familyRouteId };
-  const contentOverlayProps = { topicModalOpen,setTopicModalOpen,topicForm,createTopic,apiLoading,performApiAction,channelNames,insuranceTypeOptions,platform,scheduleOpen,setScheduleOpen,scheduleForm,updateSchedule,settings,voiceOpen,setVoiceOpen,voiceForm,updateVoice,confirmDeleteVoice,imageStylesOpen,setImageStylesOpen,imageStylesForm,updateImageStyles,xhsStyleOptions,xhsLayoutOptions,paletteOptions,articleTypeOptions,articleStyleOptions,wechatHtmlThemes,preferencesOpen,setPreferencesOpen,preferencesForm,updatePreferences,calendarOpen,setCalendarOpen,calendarMonth,setCalendarMonth,calendarItems,setCalendarItems,api,handleApiError,topics,chooseTopic,go,notificationsOpen,setNotificationsOpen,notifications,openCustomer,suggestionsOpen,setSuggestionsOpen,suggestions,setSuggestions,suggestionInsuranceType,setSuggestionInsuranceType,suggestionsGenerated,setSuggestionsGenerated,loadSuggestions,createTopicFromSuggestion,publishOpen,setPublishOpen,publishForm,markPublished,assets:drafts[platform]?.assets || [] };
+  const contentOverlayProps = { contentTypeCode,contentProductPrefill,topicModalOpen,setTopicModalOpen,topicForm,createTopic,apiLoading,performApiAction,channelNames,insuranceTypeOptions,platform,scheduleOpen,setScheduleOpen,scheduleForm,updateSchedule,settings,voiceOpen,setVoiceOpen,voiceForm,updateVoice,confirmDeleteVoice,imageStylesOpen,setImageStylesOpen,imageStylesForm,updateImageStyles,xhsStyleOptions,xhsLayoutOptions,paletteOptions,articleTypeOptions,articleStyleOptions,wechatHtmlThemes,preferencesOpen,setPreferencesOpen,preferencesForm,updatePreferences,calendarOpen,setCalendarOpen,calendarMonth,setCalendarMonth,calendarItems,setCalendarItems,api,handleApiError,topics,chooseTopic,go,notificationsOpen,setNotificationsOpen,notifications,openCustomer,suggestionsOpen,setSuggestionsOpen,suggestions,setSuggestions,suggestionInsuranceType,setSuggestionInsuranceType,suggestionsGenerated,setSuggestionsGenerated,loadSuggestions,createTopicFromSuggestion,publishOpen,setPublishOpen,publishForm,markPublished,assets:drafts[platform]?.assets || [] };
 
 
   return (
@@ -367,7 +395,11 @@ function App() {
         <WorkspaceBrand />
         <div className="sider-section-label">工作空间</div>
         <SystemNavigation placement="left" activeKey={activeNav} items={menuItems} onNavigate={go} />
-        <div className="sider-bottom"><Button type={sidebarCollapsed ? 'text' : undefined} icon={<SettingOutlined />} onClick={openPreferences}>偏好设置</Button></div>
+        <div className="sider-bottom">
+          <Tooltip title="偏好设置" placement="right">
+            <Button className="sider-preferences-button" shape="circle" icon={<SettingOutlined />} aria-label="偏好设置" onClick={openPreferences} />
+          </Tooltip>
+        </div>
       </Sider> : null}
       <Layout className={`main-layout ${!topMenuEnabled && sidebarCollapsed ? 'is-collapsed' : ''}`}>
         <Header className={`app-header ${topMenuEnabled ? 'app-header-top-menu' : ''}`}>
@@ -377,7 +409,7 @@ function App() {
           </> : <div className="header-leading"><Button type="text" className="sider-collapse-toggle" icon={sidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? '展开系统菜单' : '折叠系统菜单'} /><div className="breadcrumb"><AppstoreOutlined /><span>工作台</span><span className="slash">/</span><strong>{pageTitle[0]}</strong></div></div>}
           <div className="header-right"><Text className="header-date">{new Date().toLocaleDateString('zh-CN',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</Text><Tooltip title={themeMode === 'dark' ? '切换到明亮主题' : '切换到黑暗主题'}><Button type="text" shape="circle" icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />} onClick={() => setThemeMode((value) => value === 'dark' ? 'light' : 'dark')} aria-label={themeMode === 'dark' ? '切换到明亮主题' : '切换到黑暗主题'} /></Tooltip><Badge dot={notifications.length > 0 && settings.preferences?.notifications}><Button type="text" shape="circle" icon={<BellOutlined />} loading={Boolean(apiLoading.notifications)} onClick={() => performApiAction('notifications',openNotifications)} aria-label="通知" disabled={!settings.preferences?.notifications} /></Badge><Avatar size={34} className="user-avatar" icon={<UserOutlined />} onClick={openPreferences} /></div>
         </Header>
-        <Content className="page-content"><div className="page-title-mobile"><Text className="eyebrow">{pageTitle[0]}</Text><Text className="muted">{pageTitle[1]}</Text></div>{backendStatus === 'offline' ? <Alert style={{marginBottom:16}} type="error" showIcon message="工作台 API 暂不可用" description={`${backendError}。请在项目目录启动 npm run dev:api，并检查 PostgreSQL 连接。`} /> : null}<Suspense fallback={<div className="page-loading" aria-live="polite"><Spin /></div>}>{activeNav === 'home' ? <DashboardPage {...dashboardPageProps} /> : activeNav === 'clients' && customerRouteId ? <CustomerDetailPage customer={selectedClient?.id === Number(customerRouteId) ? selectedClient : null} loading={Boolean(apiLoading[`customer:route:${customerRouteId}`])} returnFamilyId={customerReturnFamilyId} onBack={() => customerReturnFamilyId ? go('clients',{familyId:customerReturnFamilyId}) : go('clients',{view:'customers'})} onHome={() => go('home')} onClients={() => go('clients',{view:'customers'})} onEdit={openClientEdit} onPolicy={() => setPolicyModalOpen(true)} onFollowUp={() => openFollowUpTaskModal(selectedClient)} onCompleteTask={openCompleteTaskModal} onRescheduleTask={openRescheduleTaskModal} onCancelTask={cancelFollowUpTask} onService={showPolicyServices} onVerify={verifyPolicy} serviceWorkspace={serviceWorkspace} apiLoading={apiLoading} performApiAction={performApiAction} api={api} onError={handleApiError} onSuccess={showSuccess} onCustomerUpdated={setSelectedClient} onOpenFamily={(id)=>go('clients',{familyId:id})} /> : activeNav === 'clients' && familyRouteId ? <FamilyWorkspacePage familyId={familyRouteId} api={api} apiLoading={apiLoading} performApiAction={performApiAction} onBack={() => go('clients',{view:'families'})} onHome={() => go('home')} onClients={() => go('clients',{view:'customers'})} onOpenCustomer={(id,fromFamilyId) => performApiAction(`customer:open:${id}`,()=>openCustomer(id,{fromFamilyId}))} onViewPolicyServices={showPolicyServices} serviceWorkspace={serviceWorkspace} onError={handleApiError} onSuccess={showSuccess} /> : activeNav === 'clients' ? <ClientsPage {...clientPageProps} /> : activeNav === 'content' ? <ContentPage {...contentPageProps} /> : <ProductCenterPage api={api} apiLoading={apiLoading} performApiAction={performApiAction} copyText={copyText} />}</Suspense></Content>
+        <Content className="page-content"><div className="page-title-mobile"><Text className="eyebrow">{pageTitle[0]}</Text><Text className="muted">{pageTitle[1]}</Text></div>{backendStatus === 'offline' ? <Alert style={{marginBottom:16}} type="error" showIcon message="工作台 API 暂不可用" description={`${backendError}。请在项目目录启动 npm run dev:api，并检查 PostgreSQL 连接。`} /> : null}<Suspense fallback={<div className="page-loading" aria-live="polite"><Spin /></div>}>{activeNav === 'home' ? <DashboardPage {...dashboardPageProps} /> : activeNav === 'clients' && customerRouteId ? <CustomerDetailPage customer={selectedClient?.id === Number(customerRouteId) ? selectedClient : null} loading={Boolean(apiLoading[`customer:route:${customerRouteId}`])} returnFamilyId={customerReturnFamilyId} onBack={() => customerReturnFamilyId ? go('clients',{familyId:customerReturnFamilyId}) : go('clients',{view:'customers'})} onHome={() => go('home')} onClients={() => go('clients',{view:'customers'})} onEdit={openClientEdit} onPolicy={() => setPolicyModalOpen(true)} onFollowUp={(customer,serviceItemId,context) => openFollowUpTaskModal(customer || selectedClient,serviceItemId,context)} onCompleteTask={openCompleteTaskModal} onRescheduleTask={openRescheduleTaskModal} onCancelTask={cancelFollowUpTask} onService={showPolicyServices} onVerify={verifyPolicy} serviceWorkspace={serviceWorkspace} apiLoading={apiLoading} performApiAction={performApiAction} api={api} onError={handleApiError} onSuccess={showSuccess} onCustomerUpdated={setSelectedClient} onOpenFamily={(id)=>go('clients',{familyId:id})} /> : activeNav === 'clients' && familyRouteId ? <FamilyWorkspacePage familyId={familyRouteId} refreshVersion={familyRefreshVersion} api={api} apiLoading={apiLoading} performApiAction={performApiAction} onBack={() => go('clients',{view:'families'})} onHome={() => go('home')} onClients={() => go('clients',{view:'customers'})} onOpenCustomer={(id,fromFamilyId) => performApiAction(`customer:open:${id}`,()=>openCustomer(id,{fromFamilyId}))} onViewPolicyServices={showPolicyServices} serviceWorkspace={serviceWorkspace} onFollowUp={(customer,context)=>openFollowUpTaskModal(customer,null,context)} onError={handleApiError} onSuccess={showSuccess} /> : activeNav === 'clients' ? <ClientsPage {...clientPageProps} /> : activeNav === 'content' ? <ContentPage {...contentPageProps} /> : activeNav === 'workCalendar' ? <WorkCalendarPage api={api} apiLoading={apiLoading} performApiAction={performApiAction} backendStatus={backendStatus} onError={handleApiError} onSuccess={showSuccess} /> : <ProductCenterPage api={api} apiLoading={apiLoading} performApiAction={performApiAction} copyText={copyText} go={go} />}</Suspense></Content>
       </Layout>
 
       <CustomerOverlays workspace={customerOverlayProps} serviceWorkspace={serviceWorkspace} showPolicyServices={showPolicyServices} />
@@ -393,7 +425,7 @@ function App() {
       <Modal title="工作台偏好" open={preferencesOpen} forceRender onCancel={() => setPreferencesOpen(false)} onOk={() => preferencesForm.submit()} confirmLoading={Boolean(apiLoading['settings:preferences'])} okText="保存偏好" cancelText="取消" cancelButtonProps={{color:"danger",variant:"outlined"}}>
         <Form form={preferencesForm} layout="vertical" onFinish={(values) => performApiAction('settings:preferences',() => updatePreferences(values))} initialValues={{displayName:'保险顾问',startPage:'home',menuPosition:'left',notifications:true}}>
           <Form.Item name="displayName" label="显示称呼"><Input maxLength={30} /></Form.Item>
-          <Form.Item name="startPage" label="打开工作台时显示"><Select options={[{value:'home',label:'工作首页'},{value:'clients',label:'客户与保单'},{value:'content',label:'大话保险'},{value:'products',label:'产品中心'}]} /></Form.Item>
+          <Form.Item name="startPage" label="打开工作台时显示"><Select options={[{value:'home',label:'工作首页'},{value:'clients',label:'客户与保单'},{value:'content',label:'内容工作台'},{value:'products',label:'产品中心'},{value:'workCalendar',label:'工作行事历'}]} /></Form.Item>
           <Form.Item name="menuPosition" label="系统菜单位置"><Radio.Group optionType="button" buttonStyle="solid" options={[{value:'left',label:'左侧菜单'},{value:'top',label:'顶部菜单'}]} /></Form.Item>
           <Form.Item name="notifications" valuePropName="checked"><Checkbox>显示待办通知</Checkbox></Form.Item>
         </Form>

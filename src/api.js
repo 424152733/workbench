@@ -34,6 +34,8 @@ export const api = {
   },
   customerAcquisitionSources: () => request('/customers/acquisition-sources'),
   customer: (id) => request(`/customers/${id}`),
+  customerCoverageReview: (id) => request(`/customers/${id}/coverage-review`),
+  saveCustomerCoverageProfile: (id,profile) => request(`/customers/${id}/coverage-profile`,json('PUT',{profile})),
   updateCustomerAcquisition: (id,body) => request(`/customers/${id}/acquisition`,json('PATCH',body)),
   lookupCustomers: (search) => request(`/customers/lookup?search=${encodeURIComponent(search || '')}`),
   customerFamilies: (customerId) => request(`/customers/${customerId}/families`),
@@ -54,9 +56,72 @@ export const api = {
   familyPolicyCandidates: (familyId) => request(`/families/${familyId}/policy-candidates`),
   linkFamilyPolicy: (familyId,policyId,body) => request(`/families/${familyId}/policies/${policyId}`,json('PUT',body)),
   unlinkFamilyPolicy: (familyId,policyId) => request(`/families/${familyId}/policies/${policyId}`,{method:'DELETE'}),
+  familyPolicyReview: (familyId) => request(`/families/${familyId}/policy-review`),
+  familyContractCandidates: (familyId) => request(`/families/${familyId}/policy-contract-candidates`),
+  linkFamilyContract: (familyId,contractId,body) => request(`/families/${familyId}/policy-contracts/${contractId}`,json('PUT',body)),
+  unlinkFamilyContract: (familyId,contractId) => request(`/families/${familyId}/policy-contracts/${contractId}`,{method:'DELETE'}),
+  unlinkFamilyPolicySource: (familyId,source) => request(`/families/${familyId}/policy-review/source`,json('DELETE',source)),
+  uploadFamilyContract: (familyId,file,body={}) => {
+    const form=new FormData();
+    form.append('file',file);
+    form.append('customerId',String(body.customerId||''));
+    for(const role of ['holderMemberIds','insuredMemberIds']) form.append(role,JSON.stringify(body[role]||[]));
+    return request(`/families/${familyId}/policy-contracts`,{method:'POST',body:form});
+  },
+  saveFamilyCoverageContext: (familyId,body) => request(`/families/${familyId}/coverage-context`,json('PUT',body)),
+  saveFamilyMemberCoverageProfile: (familyId,memberId,body) => request(`/families/${familyId}/members/${memberId}/coverage-profile`,json('PUT',body)),
+  exportFamilyPolicyOrganizer: async (familyId,familyName='家庭') => {
+    const response=await fetch(`/api/families/${familyId}/policy-organizer/export`);
+    if(!response.ok) {
+      const payload=await response.json().catch(()=>({}));
+      throw new Error(Array.isArray(payload.message)?payload.message.join('；'):payload.message||'家庭保单整理表导出失败');
+    }
+    const blob=await response.blob();
+    const encodedName=(response.headers.get('content-disposition')||'').match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    let fileName=`${String(familyName).replace(/[\\/:*?"<>|]/g,'_')}_家庭保单整理.xlsx`;
+    if(encodedName) {try{fileName=decodeURIComponent(encodedName);}catch{}}
+    const url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url;link.download=fileName;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  },
   createCustomer: (body) => request('/customers',json('POST',body)),
   updateCustomer: (id,body) => request(`/customers/${id}`,json('PATCH',body)),
   createPolicy: (id,body) => request(`/customers/${id}/policies`,json('POST',body)),
+  deletePolicy: (customerId,policyId) => request(`/customers/${customerId}/policies/${policyId}`,{method:'DELETE'}),
+  policyContracts: (customerId) => request(`/customers/${customerId}/policy-contracts`),
+  uploadPolicyContract: (customerId,file) => {
+    const body=new FormData();
+    body.append('file',file);
+    return request(`/customers/${customerId}/policy-contracts`,{method:'POST',body});
+  },
+  analyzePolicyContract: (customerId,documentId,consent) => request(`/customers/${customerId}/policy-contracts/${documentId}/analyze`,json('POST',{consent})),
+  deletePolicyContract: (customerId,documentId) => request(`/customers/${customerId}/policy-contracts/${documentId}`,{method:'DELETE'}),
+  savePolicyContractAsPolicy: (customerId,documentId,body) => request(`/customers/${customerId}/policy-contracts/${documentId}/save-policy`,json('POST',body)),
+  syncPolicyContractScheduleFacts: (customerId,documentId) => request(`/customers/${customerId}/policy-contracts/${documentId}/sync-schedule-facts`,json('POST',{})),
+  exportPolicyOrganizer: async (customerId,customerName='客户') => {
+    const response=await fetch(`/api/customers/${customerId}/policy-organizer/export`);
+    if (!response.ok) {
+      const contentType=response.headers.get('content-type') || '';
+      let message='保单整理表导出失败';
+      if (contentType.includes('application/json')) {
+        const payload=await response.json();
+        message=Array.isArray(payload.message)?payload.message.join('；'):payload.message || message;
+      } else message=(await response.text()) || message;
+      throw new Error(message);
+    }
+    const blob=await response.blob();
+    const disposition=response.headers.get('content-disposition') || '';
+    const encodedName=disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+    let fileName=`${String(customerName || '客户').replace(/[\\/:*?"<>|]/g,'_')}_家庭保单整理_${today}.xlsx`;
+    if (encodedName) { try { fileName=decodeURIComponent(encodedName); } catch {} }
+    const url=URL.createObjectURL(blob);
+    const link=document.createElement('a');
+    link.href=url;
+    link.download=fileName;
+    link.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  },
+  policyContractFileUrl: (customerId,documentId) => `/api/customers/${customerId}/policy-contracts/${documentId}/file`,
   verifyPolicy: (id,verified) => request(`/policies/${id}`,json('PATCH',{verified})),
   policyLifecycle: (id) => request(`/policies/${id}/lifecycle`),
   updatePolicyLifecycle: (id,body) => request(`/policies/${id}/lifecycle`,json('PATCH',body)),
@@ -99,7 +164,8 @@ export const api = {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url),1000);
   },
-  topics: () => request('/topics'),
+  contentTypes: () => request('/content/types'),
+  topics: (type='') => request(`/topics${type ? `?type=${encodeURIComponent(type)}` : ''}`),
   createTopic: (body) => request('/topics',json('POST',body)),
   deleteTopic: (id) => request(`/topics/${id}`,{method:'DELETE'}),
   updateTopic: (id,body) => request(`/topics/${id}`,json('PATCH',body)),
@@ -110,6 +176,8 @@ export const api = {
     return request(`/topics/suggest${query.size ? `?${query}` : ''}`);
   },
   generateDrafts: (id) => request(`/topics/${id}/generate`,json('POST',{})),
+  draftVersions: (id,platform) => request(`/topics/${id}/drafts/${encodeURIComponent(platform)}/versions`),
+  restoreDraftVersion: (id,platform,version) => request(`/topics/${id}/drafts/${encodeURIComponent(platform)}/versions/${version}/restore`,json('POST',{})),
   saveDraft: (id,platform,body) => request(`/topics/${id}/drafts/${encodeURIComponent(platform)}`,json('PATCH',body)),
   humanizeDraft: (id,platform) => request(`/topics/${id}/drafts/${encodeURIComponent(platform)}/humanize`,json('POST',{})),
   generateCardPlan: (id,platform) => request(`/topics/${id}/drafts/${encodeURIComponent(platform)}/card-plan/generate`,json('POST',{})),
@@ -127,12 +195,17 @@ export const api = {
   productCenterMeta: () => request('/product-center/meta'),
   productCenterPlatformSettings: () => request('/product-center/platform-settings'),
   updateProductPlatformSettings: (platform,body) => request(`/product-center/platform-settings/${encodeURIComponent(platform)}`,json('PATCH',body)),
-  productCenterProducts: ({search='',status=''}={}) => {
+  productCenterProducts: ({search='',status='',officialSaleStatus=''}={}) => {
     const query = new URLSearchParams();
     if (search) query.set('search',search);
     if (status) query.set('status',status);
+    if (officialSaleStatus) query.set('officialSaleStatus',officialSaleStatus);
     return request(`/product-center/products${query.size ? `?${query}` : ''}`);
   },
+  updateProductSyncCompany: (companyCode,syncEnabled) => request(`/product-center/companies/${encodeURIComponent(companyCode)}`,json('PATCH',{syncEnabled})),
+  startProductSync: (companyCodes) => request('/product-center/sync-runs',json('POST',{companyCodes})),
+  productSyncRuns: () => request('/product-center/sync-runs'),
+  productSyncRun: (runId) => request(`/product-center/sync-runs/${encodeURIComponent(runId)}`),
   createInsuranceProduct: (body) => request('/product-center/products',json('POST',body)),
   productCenterWorkspace: (id) => request(`/product-center/products/${id}`),
   updateInsuranceProduct: (id,body) => request(`/product-center/products/${id}`,json('PATCH',body)),
@@ -143,6 +216,7 @@ export const api = {
     form.set('documentType',documentType);
     return request(`/product-center/products/${productId}/documents`,{method:'POST',body:form});
   },
+  importOfficialProductMaterial: (productId,materialId) => request(`/product-center/products/${productId}/official-materials/${materialId}/import`,json('POST',{})),
   productDocumentUrl: (id) => `/api/product-center/documents/${id}/file`,
   downloadProductDocument: async (id,fileName) => {
     const response = await fetch(`/api/product-center/documents/${id}/file`);
@@ -157,6 +231,7 @@ export const api = {
   },
   deleteProductDocument: (id) => request(`/product-center/documents/${id}`,{method:'DELETE'}),
   analyzeProductDocument: (id) => request(`/product-center/documents/${id}/analyze`,json('POST',{})),
+  analyzeProductMaterials: (productId) => request(`/product-center/products/${productId}/analyze`,json('POST',{})),
   updateProductExtraction: (id,facts) => request(`/product-center/extractions/${id}`,json('PATCH',{facts})),
   confirmProductExtraction: (id) => request(`/product-center/extractions/${id}/confirm`,json('POST',{})),
   generateProductCopyDraft: (extractionId,platform) => request(`/product-center/extractions/${extractionId}/drafts/${encodeURIComponent(platform)}/generate`,json('POST',{})),
@@ -184,6 +259,9 @@ export const api = {
   deleteAsset: (id) => request(`/assets/${id}`,{method:'DELETE'}),
   asset: (id,download = false) => `/api/assets/${id}${download ? '?download=1' : ''}`,
   calendar: (month) => request(`/calendar${month ? `?month=${encodeURIComponent(month)}` : ''}`),
+  workCalendarEvents: (month) => request(`/work-calendar/events?month=${encodeURIComponent(month)}`),
+  createWorkCalendarEvent: (body) => request('/work-calendar/events',json('POST',body)),
+  updateWorkCalendarEvent: (id,body) => request(`/work-calendar/events/${encodeURIComponent(id)}`,json('PATCH',body)),
   notifications: () => request('/notifications'),
   settings: () => request('/settings'),
   updateSettings: (body) => request('/settings',json('PATCH',body)),

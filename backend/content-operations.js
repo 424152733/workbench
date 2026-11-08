@@ -6,13 +6,41 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import path from 'node:path';
 import { isRasterImage, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES } from './image-utils.js';
 import { buildDraftGenerationPrompt, buildXhsCardPlanPrompt, normalizeEditableXhsCardPlan, normalizeXhsCardPlan } from './content-prompts.js';
-import { cleanGeneratedCopy, cleanXhsCardPlan, demoDrafts, getResponseText, runwareTextModel } from './content-generation-helpers.js';
+import { cleanGeneratedCopy, cleanXhsCardPlan, demoDrafts } from './content-generation-helpers.js';
+import { callDeepSeekJson, deepseekTextModel } from './deepseek-client.js';
 import { RichText } from '../src/richText.js';
 import { CHANNELS, INSURANCE_TYPES, TOPIC_CATEGORIES, DEFAULT_WECHAT_THEME, WECHAT_THEMES, displayWhen, dateOnly, boolArray } from './workbench-primitives.js';
+import { CASE_KIND_NAMES, CONTENT_TYPES, CONTENT_TYPE_RULES } from '../src/features/content/content-types.js';
+import { ensureCaseKindLabels, hasCaseKindLabels } from './content-case-safety.js';
+
+const snapshotObject = (value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value === 'string') { try { const parsed = JSON.parse(value); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } }
+  return {};
+};
 
 export class ContentOperations {
-  async listTopics() {
-    const { rows } = await this.db.query('SELECT * FROM topics ORDER BY COALESCE(due_date,created_at::date),created_at DESC');
+  async listContentTypes() {
+    const { rows } = await this.db.query('SELECT code,name,description,default_platforms FROM content_types WHERE active=TRUE ORDER BY sort_order,code');
+    return rows.map((row) => ({code:row.code,name:row.name,description:row.description,defaultPlatforms:row.default_platforms,rules:CONTENT_TYPE_RULES[row.code] || []}));
+  }
+
+  async listTopics(filters = {}) {
+    const type = String(filters.type || '').trim();
+    if (type && !CONTENT_TYPES.some((item) => item.code === type)) throw new BadRequestException('内容分类无效');
+    const productId = filters.productId == null ? null : Number(filters.productId);
+    if (productId !== null && (!Number.isSafeInteger(productId) || productId < 1)) throw new BadRequestException('产品档案编号无效');
+    const { rows } = await this.db.query(`SELECT t.*,ct.name AS content_type_name,
+      link.product_id,link.extraction_id,link.source_snapshot,
+      pe.status AS current_extraction_status,
+      c.case_kind,c.summary AS case_summary,c.needs AS case_needs,c.analysis AS case_analysis,c.outcome AS case_outcome,c.financial_details AS case_financial_details,
+      c.authorization_confirmed,c.anonymization_confirmed
+      FROM topics t JOIN content_types ct ON ct.code=t.content_type_code
+      LEFT JOIN content_topic_products link ON link.topic_id=t.id
+      LEFT JOIN product_extractions pe ON pe.id=link.extraction_id AND pe.product_id=link.product_id
+      LEFT JOIN content_topic_cases c ON c.topic_id=t.id
+      WHERE ($1='' OR t.content_type_code=$1) AND ($2::bigint IS NULL OR link.product_id=$2)
+      ORDER BY COALESCE(t.due_date,t.created_at::date),t.created_at DESC`, [type,productId]);
     const topicIds = rows.map((row) => row.id);
     const drafts = topicIds.length ? await this.db.query('SELECT * FROM drafts WHERE topic_id=ANY($1::text[]) ORDER BY platform', [topicIds]) : { rows: [] };
     const assets = topicIds.length ? await this.db.query('SELECT id,topic_id,platform,file_name,mime_type,byte_size,created_at FROM assets WHERE topic_id=ANY($1::text[]) ORDER BY created_at,id', [topicIds]) : { rows: [] };
@@ -25,6 +53,9 @@ export class ContentOperations {
     }
     return rows.map((topic) => ({
       id: topic.id, title: topic.title, category: topic.category, insuranceType: topic.insurance_type || '未分类', status: topic.status,
+      contentTypeCode:topic.content_type_code,contentTypeName:topic.content_type_name,
+      productContext:topic.product_id ? {productId:Number(topic.product_id),extractionId:Number(topic.extraction_id),snapshot:topic.source_snapshot,currentStatus:topic.current_extraction_status} : null,
+      caseContext:topic.case_kind ? {caseKind:topic.case_kind,caseKindName:CASE_KIND_NAMES[topic.case_kind],summary:topic.case_summary,needs:topic.case_needs,analysis:topic.case_analysis,outcome:topic.case_outcome,financialDetails:topic.case_financial_details || '',authorizationConfirmed:Boolean(topic.authorization_confirmed),anonymizationConfirmed:Boolean(topic.anonymization_confirmed)} : null,
       due: displayWhen(topic.due_date), dueDate: dateOnly(topic.due_date),
       platforms: topic.platforms, generationStatus: topic.generation_status, generationError: topic.generation_error,
       createdAt: topic.created_at,
@@ -54,8 +85,83 @@ export class ContentOperations {
     const id = `T-${randomUUID().slice(0, 5).toUpperCase()}`;
     const insuranceType = body.insuranceType || '未分类';
     if (insuranceType !== '未分类' && !INSURANCE_TYPES.includes(insuranceType)) throw new BadRequestException('选题险种分类无效');
-    await this.db.query('INSERT INTO topics(id,title,category,insurance_type,status,due_date,platforms) VALUES($1,$2,$3,$4,$5,$6,$7)', [id,title,body.category || '保险基础',insuranceType,'选题中',body.dueDate || null,JSON.stringify(platforms)]);
+    const contentTypeCode = String(body.contentTypeCode || 'insurance_education');
+    if (!CONTENT_TYPES.some((item) => item.code === contentTypeCode)) throw new BadRequestException('内容分类无效');
+    const bounded = (value,label,max) => {
+      const result = String(value || '').replace(/[\u0000-\u001f\u007f]/g,' ').trim();
+      if (result.length > max) throw new BadRequestException(`${label}不能超过 ${max} 个字`);
+      return result;
+    };
+    let productContext = null;
+    let caseContext = null;
+    if (contentTypeCode === 'product_explainer' || contentTypeCode === 'customer_case') {
+      const productId = Number(body.productId);
+      const extractionId = Number(body.extractionId);
+      if (!Number.isSafeInteger(productId) || !Number.isSafeInteger(extractionId) || productId < 1 || extractionId < 1) throw new BadRequestException('请选择具体产品及已确认的资料版本');
+      const found = await this.db.query(`SELECT p.id AS product_id,p.product_name,p.short_name,p.product_version,p.effective_date,p.status AS product_status,
+        t.label AS insurance_type,e.id AS extraction_id,e.status AS extraction_status,e.confirmed_at,e.positioning,e.facts,e.open_questions,
+        doc.id AS document_id,doc.file_name AS document_name
+        FROM product_extractions e JOIN insurance_products p ON p.id=e.product_id
+        JOIN product_insurance_type_dictionary t ON t.code=p.insurance_type_code
+        JOIN product_documents doc ON doc.id=e.document_id WHERE p.id=$1 AND e.id=$2`,[productId,extractionId]);
+      const source = found.rows[0];
+      if (!source || source.extraction_status !== '已确认') throw new BadRequestException('只能关联该产品已确认的资料版本');
+      productContext = {productId:Number(source.product_id),extractionId:Number(source.extraction_id),insuranceType:source.insurance_type,snapshot:{productId:Number(source.product_id),productName:source.product_name,shortName:source.short_name,productVersion:source.product_version,effectiveDate:dateOnly(source.effective_date),productStatus:source.product_status,extractionId:Number(source.extraction_id),confirmedAt:source.confirmed_at,status:source.extraction_status,positioning:source.positioning,facts:source.facts,openQuestions:source.open_questions,documentId:Number(source.document_id),documentName:source.document_name}};
+    }
+    if (contentTypeCode === 'customer_case') {
+      const caseKind = String(body.caseKind || 'scenario');
+      if (!Object.hasOwn(CASE_KIND_NAMES,caseKind)) throw new BadRequestException('案例性质无效');
+      caseContext = {caseKind,summary:bounded(body.caseSummary,'案例摘要',3000),needs:bounded(body.caseNeeds,'需求要点',1200),analysis:bounded(body.caseAnalysis,'分析思路',2000),outcome:bounded(body.caseOutcome,'结果或启示',1200),financialDetails:bounded(body.caseFinancialDetails,'数值依据',1200),authorizationConfirmed:body.authorizationConfirmed === true,anonymizationConfirmed:body.anonymizationConfirmed === true};
+      if (!caseContext.summary) throw new BadRequestException('请填写脱敏后的案例摘要');
+    }
+    await this.db.transaction(async (client) => {
+      await client.query(`INSERT INTO topics(id,title,category,insurance_type,status,due_date,platforms,content_type_code)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [id,title,body.category || (contentTypeCode === 'insurance_education' ? '保险基础' : contentTypeCode === 'product_explainer' ? '产品解读' : '客户案例'),productContext?.insuranceType || insuranceType,'选题中',body.dueDate || null,JSON.stringify(platforms),contentTypeCode]);
+      if (productContext) await client.query(`INSERT INTO content_topic_products(topic_id,product_id,extraction_id,source_snapshot)
+        VALUES($1,$2,$3,$4::jsonb)`,[id,productContext.productId,productContext.extractionId,JSON.stringify(productContext.snapshot)]);
+      if (caseContext) await client.query(`INSERT INTO content_topic_cases(topic_id,case_kind,summary,needs,analysis,outcome,authorization_confirmed,anonymization_confirmed,financial_details)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[id,caseContext.caseKind,caseContext.summary,caseContext.needs,caseContext.analysis,caseContext.outcome,caseContext.authorizationConfirmed,caseContext.anonymizationConfirmed,caseContext.financialDetails]);
+    });
     return (await this.listTopics()).find((topic) => topic.id === id);
+  }
+
+  async loadTopicGenerationContext(topicId) {
+    const topic = await this.db.query('SELECT * FROM topics WHERE id=$1',[topicId]);
+    if (!topic.rows[0]) throw new NotFoundException('找不到这个选题');
+    const current = topic.rows[0];
+    if (current.content_type_code === 'product_explainer') {
+      const result = await this.db.query(`SELECT link.source_snapshot,e.status
+        FROM content_topic_products link JOIN product_extractions e ON e.id=link.extraction_id AND e.product_id=link.product_id
+        WHERE link.topic_id=$1`,[topicId]);
+      const source = result.rows[0];
+      if (!source || source.status !== '已确认') throw new BadRequestException('关联的产品资料尚未确认，暂不能生成产品解读');
+      const snapshot = source.source_snapshot || {};
+      const readerMaterial = {
+        productName:snapshot.productName || '',
+        shortName:snapshot.shortName || '',
+        productVersion:snapshot.productVersion || '',
+        effectiveDate:snapshot.effectiveDate || null,
+        positioning:snapshot.positioning || '',
+        facts:(Array.isArray(snapshot.facts) ? snapshot.facts : [])
+          .filter((fact) => fact?.confirmed)
+          .map(({category,title,productFact,plainExplanation,customerValue,boundary}) => ({category,title,productFact,plainExplanation,customerValue,boundary})),
+      };
+      return {topic:current,material:JSON.stringify(readerMaterial),caseKind:null};
+    }
+    if (current.content_type_code === 'customer_case') {
+      const result = await this.db.query('SELECT * FROM content_topic_cases WHERE topic_id=$1',[topicId]);
+      const item = result.rows[0];
+      if (!item) throw new BadRequestException('案例资料不完整，暂不能生成');
+      if (item.case_kind === 'authorized_real' && (!item.authorization_confirmed || !item.anonymization_confirmed)) throw new BadRequestException('真实案例需先确认已取得使用授权并完成脱敏，才能生成或审核稿件');
+      if (!item.summary.trim()) throw new BadRequestException('请补充脱敏后的案例摘要');
+      const productResult = await this.db.query(`SELECT link.source_snapshot,e.status
+        FROM content_topic_products link JOIN product_extractions e ON e.id=link.extraction_id AND e.product_id=link.product_id
+        WHERE link.topic_id=$1`,[topicId]);
+      const product = productResult.rows[0];
+      if (!product || product.status !== '已确认') throw new BadRequestException('客户案例需关联产品中心已确认的资料版本，暂不能生成');
+      return {topic:current,material:JSON.stringify({product:product?.source_snapshot || null,case:{caseKind:item.case_kind,caseKindName:CASE_KIND_NAMES[item.case_kind],summary:item.summary,needs:item.needs,analysis:item.analysis,outcome:item.outcome,financialDetails:item.financial_details || ''}}),caseKind:item.case_kind};
+    }
+    return {topic:current,material:'',caseKind:null};
   }
 
   async deleteTopic(id) {
@@ -89,32 +195,8 @@ export class ContentOperations {
     return (await this.listTopics()).find((topic) => topic.id === rows[0].id);
   }
 
-  async callModel(instructions, input) {
-    if (!process.env.RUNWARE_API_KEY) return null;
-    let response;
-    try {
-      response = await fetch('https://api.runware.ai/v1/responses', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.RUNWARE_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: runwareTextModel(),
-          instructions,
-          input: typeof input === 'string' ? `${input}\n\nPlease return valid json.` : input,
-          text: { format: { type: 'json_object' } },
-        }),
-        signal: AbortSignal.timeout(120_000),
-      });
-    } catch (error) {
-      const message = error?.name === 'TimeoutError' || error?.cause?.code === 'ETIMEDOUT'
-        ? '连接 Runware GPT 服务超时。请检查网络、DNS 或代理设置后重试。'
-        : '无法连接 Runware GPT 服务（api.runware.ai）。请检查网络、DNS 或代理设置后重试。';
-      throw new ServiceUnavailableException(message);
-    }
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new ServiceUnavailableException(payload.error?.message || `GPT 请求失败（HTTP ${response.status}）`);
-    const raw = getResponseText(payload).trim();
-    try { return JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
-    catch { throw new ServiceUnavailableException('GPT 返回内容未符合预期 JSON 格式，请重试'); }
+  async callDeepSeekModel(instructions,input,timeoutMs=120_000,modelOptions={}) {
+    return callDeepSeekJson({instructions,input,timeoutMs,...modelOptions});
   }
 
   async runSkill(payload, timeoutMs = 180_000) {
@@ -139,32 +221,35 @@ export class ContentOperations {
   }
 
   async generateDrafts(topicId) {
-    const found = await this.db.query('SELECT * FROM topics WHERE id=$1', [topicId]);
-    if (!found.rows[0]) throw new NotFoundException('找不到这个选题');
-    const topic = found.rows[0];
+    const context = await this.loadTopicGenerationContext(topicId);
+    const topic = context.topic;
     const platforms = (Array.isArray(topic.platforms) ? topic.platforms : CHANNELS).filter((platform) => CHANNELS.includes(platform));
     if (!platforms.length) throw new BadRequestException('这个选题没有有效的发布平台');
     await this.db.query("UPDATE topics SET generation_status='running',generation_error=NULL,updated_at=NOW() WHERE id=$1", [topicId]);
     try {
       const contentSettings = (await this.getSettings()).content || {};
-      const prompt = buildDraftGenerationPrompt({title:topic.title,category:topic.category,platforms,voice:contentSettings.voice || ''});
-      const generated = await this.callModel(prompt.instructions,prompt.input);
+      const voice = topic.content_type_code === 'insurance_education'
+        ? contentSettings.voice || ''
+        : contentSettings.categoryVoices?.[topic.content_type_code] || '';
+      const prompt = buildDraftGenerationPrompt({title:topic.title,category:topic.category,platforms,voice,materials:context.material,contentTypeCode:topic.content_type_code,contentTypeName:CONTENT_TYPES.find((item) => item.code === topic.content_type_code)?.name});
+      const generated = await this.callDeepSeekModel(prompt.instructions,prompt.input);
+      const aiName = 'DeepSeek';
       const rawDrafts = generated ? generated.drafts : null;
       if (generated && (!Array.isArray(rawDrafts) || rawDrafts.length !== platforms.length)) {
-        throw new ServiceUnavailableException('GPT 没有按选题启用的平台完整返回稿件，请重试');
+        throw new ServiceUnavailableException(`${aiName} 没有按选题启用的平台完整返回稿件，请重试`);
       }
       const allowed = new Map();
       if (generated) {
         for (const draft of rawDrafts) {
           if (!draft || typeof draft !== 'object' || Array.isArray(draft) || !platforms.includes(draft.platform) || allowed.has(draft.platform) ||
               typeof draft.title !== 'string' || !draft.title.trim() || typeof draft.body !== 'string' || !draft.body.trim()) {
-            throw new ServiceUnavailableException('GPT 返回的平台稿件不完整或平台重复，请重试');
+            throw new ServiceUnavailableException(`${aiName} 返回的平台稿件不完整或平台重复，请重试`);
           }
           if (['summary','hashtags','sources'].some((field) => draft[field] !== undefined && typeof draft[field] !== 'string')) {
-            throw new ServiceUnavailableException('GPT 返回了格式错误的可选稿件字段，请重试');
+            throw new ServiceUnavailableException(`${aiName} 返回了格式错误的可选稿件字段，请重试`);
           }
           const cardPlan = draft.platform === '小红书' ? normalizeXhsCardPlan(draft.cardPlan) : [];
-          if (draft.platform === '小红书' && !cardPlan) throw new ServiceUnavailableException('GPT 没有按要求返回 3–5 张小红书图卡规划，请重新生成');
+          if (draft.platform === '小红书' && !cardPlan) throw new ServiceUnavailableException(`${aiName} 没有按要求返回 3–5 张小红书图卡规划，请重新生成`);
           allowed.set(draft.platform,{
             ...draft,
             title:cleanGeneratedCopy(draft.title),
@@ -175,15 +260,15 @@ export class ContentOperations {
             cardPlan:draft.platform === '小红书' ? cleanXhsCardPlan(cardPlan) : [],
           });
         }
-        if (platforms.some((platform) => !allowed.has(platform))) throw new ServiceUnavailableException('GPT 漏掉了选题启用的平台，请重试');
+        if (platforms.some((platform) => !allowed.has(platform))) throw new ServiceUnavailableException(`${aiName} 漏掉了选题启用的平台，请重试`);
       }
       const fallback = demoDrafts(topic.title);
-      const provider = generated ? runwareTextModel() : 'demo';
+      const provider = generated ? deepseekTextModel() : 'demo';
       const generatedForPlatforms = platforms.map((platform) => {
         const output = allowed.get(platform) || fallback[platform];
         return { platform,title:output.title || topic.title,text:output.body || '',...(platform === '小红书' ? {cardPlan:output.cardPlan} : {}) };
       });
-      const humanized = await this.runSkill({ skill:'humanizer-zh',drafts:generatedForPlatforms },600_000);
+      const humanized = await this.runSkill({ skill:'humanizer-zh',provider:'deepseek',drafts:generatedForPlatforms },600_000);
       const humanizedByPlatform = new Map((humanized.drafts || []).map((draft) => [draft.platform,draft]));
       if (platforms.some((platform) => !humanizedByPlatform.get(platform)?.text?.trim())) {
         throw new ServiceUnavailableException('humanizer-zh 未返回全部平台的润色稿件，请重试');
@@ -194,7 +279,7 @@ export class ContentOperations {
           const before = await client.query('SELECT * FROM drafts WHERE topic_id=$1 AND platform=$2 FOR UPDATE', [topicId,platform]);
           if (before.rows[0]) await this.snapshotVersion(client, before.rows[0], 'before-regenerate');
           const humanizedOutput = humanizedByPlatform.get(platform);
-          const body = cleanGeneratedCopy(humanizedOutput.text);
+          let body = cleanGeneratedCopy(humanizedOutput.text);
           let cardPlan = output.cardPlan || [];
           if (platform === '小红书') {
             const polishedPlan = normalizeXhsCardPlan(humanizedOutput.cardPlan);
@@ -203,6 +288,7 @@ export class ContentOperations {
             }
             cardPlan = cleanXhsCardPlan(polishedPlan.map((card,index) => ({...card,role:cardPlan[index].role})));
           }
+          ({body,cardPlan} = ensureCaseKindLabels({caseKind:context.caseKind,body,cardPlan}));
           const htmlContent = platform === '公众号' ? this.renderWechatHtml(output.title || topic.title,output.summary || '',body,contentSettings.wechatTheme) : '';
           await client.query(`INSERT INTO drafts(topic_id,platform,title,summary,body,hashtags,sources,xhs_card_plan,status,humanized,provider,approval_checks,html_content)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'待审核',TRUE,$9,'[false,false,false]'::jsonb,$10)
@@ -213,7 +299,7 @@ export class ContentOperations {
         }
         await client.query("UPDATE topics SET status='待审核',generation_status='succeeded',generation_error=NULL,updated_at=NOW() WHERE id=$1", [topicId]);
       });
-      return { topic: (await this.listTopics()).find((item) => item.id === topicId), provider, humanizer:'humanizer-zh', mode: provider === 'demo' ? 'demo' : 'gpt' };
+      return { topic: (await this.listTopics()).find((item) => item.id === topicId), provider, humanizer:'humanizer-zh', mode: provider === 'demo' ? 'demo' : 'deepseek' };
     } catch (error) {
       await this.db.query("UPDATE topics SET generation_status='failed',generation_error=$2,updated_at=NOW() WHERE id=$1", [topicId,error.message || '生成失败']);
       throw error;
@@ -227,13 +313,14 @@ export class ContentOperations {
   }
 
   async humanizeDraft(topicId, platform) {
+    const context = await this.loadTopicGenerationContext(topicId);
     const found = await this.db.query('SELECT * FROM drafts WHERE topic_id=$1 AND platform=$2', [topicId,platform]);
     if (!found.rows[0]) throw new NotFoundException('请先生成这个平台的草稿');
     const draft = found.rows[0];
     const sourceCardPlan = platform === '小红书' ? normalizeXhsCardPlan(draft.xhs_card_plan,{allowEmpty:true}) : [];
-    const result = await this.runSkill({skill:'humanizer-zh',platform,title:draft.title,text:draft.body,...(sourceCardPlan?.length ? {cardPlan:sourceCardPlan} : {})},180_000);
-    const resultText = cleanGeneratedCopy(result.text || result.output?.text || '');
-    const provider = 'humanizer-zh';
+    const result = await this.runSkill({skill:'humanizer-zh',provider:'deepseek',platform,title:draft.title,text:draft.body,...(sourceCardPlan?.length ? {cardPlan:sourceCardPlan} : {})},180_000);
+    let resultText = cleanGeneratedCopy(result.text || result.output?.text || '');
+    const provider = deepseekTextModel();
     if (!resultText?.trim()) throw new ServiceUnavailableException('没有得到可用的润色正文');
     let nextCardPlan = draft.xhs_card_plan || [];
     if (platform === '小红书' && sourceCardPlan?.length) {
@@ -243,6 +330,7 @@ export class ContentOperations {
       }
       nextCardPlan = cleanXhsCardPlan(polished.map((card,index) => ({...card,role:sourceCardPlan[index].role})));
     }
+    ({body:resultText,cardPlan:nextCardPlan} = ensureCaseKindLabels({caseKind:context.caseKind,body:resultText,cardPlan:nextCardPlan}));
     const htmlTheme = (await this.getSettings()).content?.wechatTheme || DEFAULT_WECHAT_THEME;
     const htmlContent = platform === '公众号' ? this.renderWechatHtml(draft.title,draft.summary,resultText,htmlTheme) : draft.html_content;
     await this.snapshotVersionWithPool(draft, 'before-humanize');
@@ -258,12 +346,13 @@ export class ContentOperations {
     ]);
     if (!topicResult.rows[0]) throw new NotFoundException('找不到这个选题');
     if (!draftResult.rows[0]) throw new NotFoundException('请先生成这个平台的草稿');
+    const context = await this.loadTopicGenerationContext(topicId);
     const draft = draftResult.rows[0];
     const prompt = buildXhsCardPlanPrompt({title:draft.title || topicResult.rows[0].title,body:draft.body,sources:draft.sources});
-    const generated = await this.callModel(prompt.instructions,prompt.input);
+    const generated = await this.callDeepSeekModel(prompt.instructions,prompt.input);
     const planned = generated ? normalizeXhsCardPlan(generated.cardPlan) : demoXhsCardPlan(draft.title || topicResult.rows[0].title,draft.body);
-    if (!planned) throw new ServiceUnavailableException('GPT 没有返回有效的 3–5 张图卡规划，请重试');
-    const cardPlan = cleanXhsCardPlan(planned);
+    if (!planned) throw new ServiceUnavailableException('DeepSeek 没有返回有效的 3–5 张图卡规划，请重试');
+    const cardPlan = cleanXhsCardPlan(ensureCaseKindLabels({caseKind:context.caseKind,body:draft.body,cardPlan:planned}).cardPlan);
     if (Array.isArray(draft.xhs_card_plan) && draft.xhs_card_plan.length) await this.snapshotVersionWithPool(draft,'before-card-plan');
     await this.db.query(`UPDATE drafts SET xhs_card_plan=$3::jsonb,status='草稿',approval_checks='[false,false,false]'::jsonb,
       approved_at=NULL,updated_at=NOW() WHERE topic_id=$1 AND platform=$2`,[topicId,platform,JSON.stringify(cardPlan)]);
@@ -272,6 +361,53 @@ export class ContentOperations {
 
   async snapshotVersionWithPool(draft, changedBy) {
     await this.db.transaction((client) => this.snapshotVersion(client,draft,changedBy));
+  }
+
+  async listDraftVersions(topicId,platform) {
+    if (!CHANNELS.includes(platform)) throw new BadRequestException('发布平台无效');
+    const draft = await this.db.query('SELECT id FROM drafts WHERE topic_id=$1 AND platform=$2',[topicId,platform]);
+    if (!draft.rows[0]) throw new NotFoundException('找不到这个平台的稿件');
+    const {rows} = await this.db.query('SELECT version,snapshot,changed_by,created_at FROM draft_versions WHERE draft_id=$1 ORDER BY version DESC',[draft.rows[0].id]);
+    return rows.map((row) => {
+      const snapshot = snapshotObject(row.snapshot);
+      return {version:Number(row.version),changedBy:snapshot.source === 'product-center-legacy' ? 'product-center-legacy' : row.changed_by,createdAt:row.created_at,title:snapshot.title || '',summary:snapshot.summary || '',body:snapshot.body || '',cardPlan:snapshot.cardPlan || snapshot.xhs_card_plan || []};
+    });
+  }
+
+  async restoreDraftVersion(topicId,platform,version) {
+    if (!CHANNELS.includes(platform)) throw new BadRequestException('发布平台无效');
+    const targetVersion = Number(version);
+    if (!Number.isInteger(targetVersion) || targetVersion < 1) throw new BadRequestException('稿件版本号无效');
+    const contentSettings = (await this.getSettings()).content || {};
+    await this.db.transaction(async (client) => {
+      const currentResult = await client.query('SELECT * FROM drafts WHERE topic_id=$1 AND platform=$2 FOR UPDATE',[topicId,platform]);
+      const current = currentResult.rows[0];
+      if (!current) throw new NotFoundException('找不到这个平台的稿件');
+      const targetResult = await client.query('SELECT snapshot FROM draft_versions WHERE draft_id=$1 AND version=$2',[current.id,targetVersion]);
+      if (!targetResult.rows[0]) throw new NotFoundException('找不到这个稿件版本');
+      const snapshot = snapshotObject(targetResult.rows[0].snapshot);
+      const title = String(snapshot.title || '').trim();
+      let body = String(snapshot.body || '').trim();
+      if (!title || !body) throw new BadRequestException('历史版本缺少标题或正文，无法恢复');
+      const summary = String(snapshot.summary || '');
+      const hashtags = String(snapshot.hashtags || '');
+      const sources = String(snapshot.sources || '');
+      let cardPlan = platform === '小红书' ? normalizeEditableXhsCardPlan(snapshot.cardPlan || snapshot.xhs_card_plan || []) : [];
+      if (!cardPlan) throw new BadRequestException('历史版本的小红书图卡结构无效，无法恢复');
+      const topic = await client.query(`SELECT t.content_type_code,c.case_kind FROM topics t
+        LEFT JOIN content_topic_cases c ON c.topic_id=t.id WHERE t.id=$1`,[topicId]);
+      if (topic.rows[0]?.content_type_code === 'customer_case') {
+        if (!topic.rows[0].case_kind) throw new BadRequestException('案例资料不完整，无法恢复稿件');
+        ({body,cardPlan} = ensureCaseKindLabels({caseKind:topic.rows[0].case_kind,body,cardPlan}));
+      }
+      await this.snapshotVersion(client,current,'before-restore');
+      const htmlContent = platform === '公众号' ? this.renderWechatHtml(title,summary,body,contentSettings.wechatTheme || DEFAULT_WECHAT_THEME) : '';
+      await client.query(`UPDATE drafts SET title=$3,summary=$4,body=$5,hashtags=$6,sources=$7,xhs_card_plan=$8::jsonb,
+        status='草稿',humanized=$9,provider=$10,approval_checks='[false,false,false]'::jsonb,approved_at=NULL,
+        html_content=$11,updated_at=NOW() WHERE topic_id=$1 AND platform=$2`,
+      [topicId,platform,title,summary,body,hashtags,sources,JSON.stringify(cleanXhsCardPlan(cardPlan)),Boolean(snapshot.humanized),String(snapshot.provider || current.provider),htmlContent]);
+    });
+    return this.getDraft(topicId,platform);
   }
 
   async getDraft(topicId, platform) {
@@ -295,7 +431,14 @@ export class ContentOperations {
     const changed = fields.some((key) => body[key] !== undefined && body[key] !== draft[key]) || cardPlanChanged;
     if (changed) await this.snapshotVersionWithPool(draft,'before-edit');
     const next = Object.fromEntries(fields.map((key) => [key, body[key] ?? draft[key]]));
-    const nextCardPlan = platform === '小红书' ? cleanXhsCardPlan(requestedCardPlan) : currentCardPlan;
+    let nextCardPlan = platform === '小红书' ? cleanXhsCardPlan(requestedCardPlan) : currentCardPlan;
+    const caseResult = await this.db.query(`SELECT t.content_type_code,c.case_kind FROM topics t
+      LEFT JOIN content_topic_cases c ON c.topic_id=t.id WHERE t.id=$1`,[topicId]);
+    if (!caseResult.rows[0]) throw new NotFoundException('找不到这个选题');
+    if (caseResult.rows[0].content_type_code === 'customer_case') {
+      if (!caseResult.rows[0].case_kind) throw new BadRequestException('案例资料不完整，暂不能保存稿件');
+      ({body:next.body,cardPlan:nextCardPlan} = ensureCaseKindLabels({caseKind:caseResult.rows[0].case_kind,body:next.body,cardPlan:nextCardPlan}));
+    }
     const checks = changed ? [false,false,false] : boolArray(body.checks ?? draft.approval_checks);
     const status = changed ? '草稿' : draft.status;
     const htmlTheme = (await this.getSettings()).content?.wechatTheme || DEFAULT_WECHAT_THEME;
@@ -339,6 +482,8 @@ export class ContentOperations {
   async approveDraft(topicId, platform, body) {
     const draft = await this.db.query('SELECT * FROM drafts WHERE topic_id=$1 AND platform=$2', [topicId,platform]);
     if (!draft.rows[0]) throw new NotFoundException('请先生成这个平台的草稿');
+    const context = await this.loadTopicGenerationContext(topicId);
+    if (context.topic.content_type_code === 'customer_case' && !hasCaseKindLabels({caseKind:context.caseKind,body:draft.rows[0].body,platform,cardPlan:draft.rows[0].xhs_card_plan})) throw new BadRequestException('稿件需明确标注综合案例或情景示例后才能审核通过');
     const checks = boolArray(body.checks ?? draft.rows[0].approval_checks);
     if (!checks.every(Boolean)) throw new BadRequestException('事实来源、表达边界和图片素材三项都核对后才能审核通过');
     const result = await this.db.query(`UPDATE drafts SET approval_checks=$3,status='已审核',approved_at=NOW(),updated_at=NOW()
@@ -357,16 +502,16 @@ export class ContentOperations {
     if (!Array.isArray(excludeTitles) || excludeTitles.some((title) => typeof title !== 'string')) throw new BadRequestException('换一批参数无效');
     excludeTitles = excludeTitles.map((title) => title.trim()).filter(Boolean).slice(0,10);
     const popular = await this.db.query('SELECT concern,COUNT(*)::int AS count FROM customers WHERE concern <> \'待了解\' GROUP BY concern ORDER BY count DESC LIMIT 5');
-    if (process.env.RUNWARE_API_KEY) {
+    if (process.env.DEEPSEEK_API_KEY) {
       const selectedType = insuranceType === '不限' ? '不限（请覆盖多个险种，并逐条标注所属险种）' : insuranceType;
       const excluded = excludeTitles.length ? `\n本轮换批需要避开这些已给出的标题和相同切入角度：${excludeTitles.join('；')}` : '';
-      const result = await this.callModel('你是“大话保险”科普选题编辑。给普通消费者提供大白话保险科普主题，不制造恐慌、不做产品推销、不预设理赔结论。只围绕用户选择的险种生成主题。返回 JSON {"topics":[{"title":"","category":"保险基础|误区澄清|条款翻译|办事指南","insuranceType":"寿险|健康险|财险|意外险|年金/养老险|综合保险"}]}，给出 5 条，每条主题和切入角度都要有差异。', `选定险种：${selectedType}\n客户常见问题（仅作匿名汇总）：${popular.rows.map((r) => `${r.concern}(${r.count})`).join('、') || '保险常见误区'}${excluded}\n请严格返回合法 json。`);
+      const result = await this.callDeepSeekModel('你是“大话保险”科普选题编辑。给普通消费者提供大白话保险科普主题，不制造恐慌、不做产品推销、不预设理赔结论。只围绕用户选择的险种生成主题。返回 JSON {"topics":[{"title":"","category":"保险基础|误区澄清|条款翻译|办事指南","insuranceType":"寿险|健康险|财险|意外险|年金/养老险|综合保险"}]}，给出 5 条，每条主题和切入角度都要有差异。', `选定险种：${selectedType}\n客户常见问题（仅作匿名汇总）：${popular.rows.map((r) => `${r.concern}(${r.count})`).join('、') || '保险常见误区'}${excluded}\n请严格返回合法 json。`);
       const topics = (Array.isArray(result?.topics) ? result.topics : []).filter((item) => item && typeof item.title === 'string' && item.title.trim()).slice(0,5).map((item) => ({
         title:item.title.trim(),
         category:TOPIC_CATEGORIES.includes(item.category) ? item.category : '保险基础',
         insuranceType:insuranceType === '不限' ? (INSURANCE_TYPES.includes(item.insuranceType) ? item.insuranceType : '综合保险') : insuranceType,
       })).filter((item) => !excludeTitles.includes(item.title));
-      return { provider: runwareTextModel(), insuranceType, topics };
+      return { provider: deepseekTextModel(), insuranceType, topics };
     }
     const samples = {
       '寿险':['定期寿险和终身寿险有什么不同？','家庭经济支柱买寿险，保额怎么考虑？','寿险的受益人可以指定谁？','投保寿险时，健康告知要注意什么？','寿险合同里的等待期和免责条款怎么看？','给孩子买寿险，哪些规则需要先了解？','寿险保额和家庭责任怎么一起看？','寿险保费交多久，合同里怎么看？','房贷家庭配置寿险时，哪些责任要考虑？','寿险保单变更受益人需要什么手续？','定期寿险到期后，保障会怎么变化？','多人共同承担家庭责任，寿险怎么梳理？'],

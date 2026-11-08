@@ -8,7 +8,32 @@
 .product-center-summary .ant-typography { color: #859188; font-size: 12px; }
 .product-center-summary strong { color: #354b3e; font-size: 25px; font-weight: 600; }
 .product-center-summary small { color: #97a39b; font-size: 11px; font-weight: 400; }
+.product-sync-panel .ant-card-body { display: grid; gap: 12px; }
+.product-sync-intro { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.product-sync-intro > .ant-typography { max-width: 850px; font-size: 11px; line-height: 1.65; }
+.product-sync-companies { display: grid; grid-template-columns: repeat(auto-fit,minmax(235px,1fr)); gap: 10px; }
+.product-sync-company { display: grid; min-width: 0; gap: 9px; padding: 12px; border: 1px solid #edf0ed; border-radius: 10px; background: #fcfdfc; }
+.product-sync-company-heading,.product-sync-company-heading > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.product-sync-company-heading > div { justify-content: flex-start; min-width: 0; }
+.product-sync-company-heading strong { color: #405347; font-size: 12px; }
+.product-sync-company-heading .ant-tag { margin: 0; font-size: 9px; }
+.product-sync-company-heading .ant-checkbox-wrapper { flex: none; color: #7b887f; font-size: 10px; }
+.product-sync-coverage,.product-sync-run-empty { color: #89958d; font-size: 10px; line-height: 1.6; }
+.product-sync-run { display: grid; min-height: 35px; align-content: start; gap: 5px; font-size: 10px; }
+.product-sync-run .ant-space { flex-wrap: wrap; }
+.product-sync-run .ant-typography { font-size: 10px; }
+.product-sync-progress { margin: 0; }
+.product-sync-error { line-height: 1.5; }
+.product-sync-notice { margin-bottom: 2px; }
+.product-official-source { display: grid; gap: 5px; padding-top: 12px; margin-top: 5px; border-top: 1px solid #edf0ed; }
+.product-official-source-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.product-official-source-heading > .ant-typography { font-size: 10px; }
+.product-official-source .ant-space { gap: 2px 4px !important; }
+.product-official-source .ant-btn { height: 23px; padding-inline: 5px; font-size: 10px; }
+.product-official-source > .ant-typography { font-size: 9px; line-height: 1.55; }
 .product-center-layout { display: grid; grid-template-columns: minmax(245px, .32fr) minmax(0,1fr); align-items: start; gap: 16px; }
+.product-catalog-toolbar { display: grid; grid-template-columns: minmax(0,1fr); gap: 7px; }
+.product-catalog-toolbar .ant-select { width: 100%; }
 .product-panel { border: 1px solid #e8ede8; border-radius: 12px !important; box-shadow: 0 4px 16px #26332f05; }
 .product-panel .ant-card-head { min-height: 49px; padding-inline: 17px; border-color: #edf0ed; }
 .product-panel .ant-card-head-title { color: #46574c; font-size: 13px; }
@@ -43,6 +68,8 @@
 .product-document-detail { display: grid; gap: 12px; padding-top: 14px; margin-top: 13px; border-top: 1px solid #edf0ed; }
 .product-document-detail .ant-descriptions-item-label,.product-document-detail .ant-descriptions-item-content { font-size: 10px; }
 .product-document-actions { display: flex; flex-wrap: wrap; }
+.product-source-summary-hint { display: block; line-height: 1.6; }
+.product-source-summary-warning { margin-top: 2px; }
 .product-no-image-alert { margin-top: 15px; }
 .product-extraction-select { width: 100%; margin-bottom: 12px; }
 .product-positioning { padding: 11px 12px; border-radius: 8px; color: #4f6958; background: #f3f7f1; font-size: 12px; }
@@ -87,6 +114,11 @@
 .product-approval-checks .ant-checkbox-wrapper { color: #68766d; font-size: 10px; line-height: 1.55; }
 .product-approval-checks > .ant-btn { justify-self: end; }
 .product-copy-preview { min-width: 0; }
+.product-interpretation-list { display: grid; gap: 8px; }
+.product-interpretation-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid #e9eee9; border-radius: 9px; background: #fcfdfb; }
+.product-interpretation-item > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.product-interpretation-item > div .ant-typography:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.product-interpretation-item .ant-space { flex: none; }
 .product-copy-preview .ant-card-body { display: grid; gap: 12px; }
 .product-article-preview { max-height: 790px; overflow: auto; border: 1px solid #e8ece8; border-radius: 10px; background: #f5f7f5; }
 .product-article-preview .platform-article-preview { min-height: 600px; }
@@ -95,12 +127,16 @@
 
 :root[data-theme="dark"] .product-center-summary > .ant-card,
 :root[data-theme="dark"] .product-panel { border-color: #2b3a33; background: #17211d; }
+:root[data-theme="dark"] .product-sync-company { border-color: #2b3a33; background: #1b2621; }
+:root[data-theme="dark"] .product-official-source { border-color: #2b3a33; }
+:root[data-theme="dark"] .product-interpretation-item { border-color: #2b3a33; background: #19241f; }
 :root[data-theme="dark"] .product-center-summary .ant-typography,
 :root[data-theme="dark"] .product-catalog-item > small,
 :root[data-theme="dark"] .product-catalog-counts,
 :root[data-theme="dark"] .product-preview-note { color: #a2b0a7 !important; }
 :root[data-theme="dark"] .product-center-summary strong,
 :root[data-theme="dark"] .product-profile-heading h3,
+:root[data-theme="dark"] .product-sync-company-heading strong,
 :root[data-theme="dark"] .product-catalog-item-title strong,
 :root[data-theme="dark"] .product-document-copy strong,
 :root[data-theme="dark"] .product-source-refs > .ant-typography { color: #d6e2d9; }
@@ -141,6 +177,10 @@
 @media (max-width: 600px) {
   .product-center-summary { grid-template-columns: 1fr; gap: 8px; }
   .product-center-summary > .ant-card .ant-card-body { min-height: 62px; }
+  .product-sync-intro { align-items: flex-start; flex-direction: column; }
+  .product-sync-intro > .ant-btn { align-self: flex-end; }
+  .product-sync-company-heading { align-items: flex-start; flex-direction: column; }
+  .product-official-source-heading { align-items: flex-start; flex-direction: column; }
   .product-profile-heading { flex-direction: column; }
   .product-profile-heading > .ant-space { width: 100%; }
   .product-profile-heading > .ant-space .ant-btn { flex: 1; }

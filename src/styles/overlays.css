@@ -6,9 +6,9 @@
 
 .ant-modal .ant-form-item-label > label { color: #6f7d73; font-size: 10px; }
 
-.ant-modal .ant-alert { border-radius: 8px; }
+.ant-modal .ant-alert { border-radius: 10px; }
 
-.ant-modal .ant-alert-title { font-size: 9px; }
+.ant-modal .ant-alert-title { font-size: 12px; }
 
 .image-preview-modal .ant-modal-content { display: flex; height: min(90dvh, 940px); flex-direction: column; }
 

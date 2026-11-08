@@ -12,8 +12,8 @@ test('generated copy uses natural list markers instead of markdown bold and rigi
 });
 
 test('topic recommendations can be filtered by insurance type and refreshed without repeated titles',async () => {
-  const previousKey = process.env.RUNWARE_API_KEY;
-  delete process.env.RUNWARE_API_KEY;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  delete process.env.DEEPSEEK_API_KEY;
   const service = new WorkbenchService({query:async () => ({rows:[]})});
   try {
     const first = await service.suggestTopics('财险');
@@ -26,8 +26,8 @@ test('topic recommendations can be filtered by insurance type and refreshed with
     assert.ok(second.topics.every((topic) => !first.topics.some((item) => item.title === topic.title)));
     await assert.rejects(service.suggestTopics('不支持的险种'),(error) => error.getStatus?.() === 400);
   } finally {
-    if (previousKey === undefined) delete process.env.RUNWARE_API_KEY;
-    else process.env.RUNWARE_API_KEY = previousKey;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
   }
 });
 
@@ -155,6 +155,7 @@ test('Xiaohongshu card plan can be saved while a card is still being edited',asy
       id:3,topic_id:12,platform:'小红书',title:'等待期是什么',summary:'',body:'正文',hashtags:'',sources:'',
       xhs_card_plan:currentPlan,approval_checks:[true,true,true],status:'已审核',
     }]};
+    if (sql.startsWith('SELECT t.content_type_code,c.case_kind FROM topics')) return {rows:[{content_type_code:'insurance_education',case_kind:null}]};
     if (sql.startsWith('UPDATE drafts')) { updateParams = params; return {rows:[]}; }
     throw new Error(`Unexpected test query: ${sql}`);
   }});
@@ -232,7 +233,7 @@ test('legacy Xiaohongshu draft can generate and persist a card plan with the tex
     if (sql.startsWith('UPDATE drafts')) { updateParams = params; return {rows:[]}; }
     throw new Error(`Unexpected test query: ${sql}`);
   }});
-  service.callModel = async (instructions,input) => { modelCall = {instructions,input}; return {cardPlan:plan}; };
+  service.callDeepSeekModel = async (instructions,input) => { modelCall = {instructions,input}; return {cardPlan:plan}; };
   service.getDraft = async () => ({cardPlan:JSON.parse(updateParams[2])});
   const result = await service.generateXhsCardPlan('T-7','小红书');
   assert.match(modelCall.instructions,/3–5 张生产用图卡规划/);

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Breadcrumb, Button, Card, Col, Descriptions, Divider, Empty, Form, Input, Modal, Popconfirm, Row, Select, Space, Spin, Tag, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons';
 import FamilyRelationshipGraph from './FamilyRelationshipGraph.jsx';
-import { FamilyPolicyDiagnosis } from './FamilyPolicyDiagnosis.jsx';
+import { FamilyPolicyReviewPanel } from './FamilyPolicyReviewPanel.jsx';
 import { PolicyCard } from './PolicyCard.jsx';
 import { normalizeFamilyMemberIdentity } from './family-member-form.js';
 
@@ -11,7 +11,7 @@ const kindLabels = {partner:'配偶 / 伴侣',parent_child:'父母与子女',sib
 const objectLabels = {vehicle:'车辆',home:'房屋',property:'家庭财产',other:'其他财产'};
 const coverageLabels = {medical:'医疗',critical_illness:'重疾',life:'寿险',accident:'意外',auto:'车险',home:'家财险',other:'其他'};
 
-export function FamilyWorkspacePage({familyId,api,apiLoading,performApiAction,onBack,onHome,onClients,onOpenCustomer,onViewPolicyServices,serviceWorkspace,onError,onSuccess}) {
+export function FamilyWorkspacePage({familyId,refreshVersion,api,apiLoading,performApiAction,onBack,onHome,onClients,onOpenCustomer,onViewPolicyServices,serviceWorkspace,onFollowUp,onError,onSuccess}) {
   const [family,setFamily] = useState(null);
   const [selectedMemberId,setSelectedMemberId] = useState(null);
   const [loadError,setLoadError] = useState('');
@@ -45,7 +45,7 @@ export function FamilyWorkspacePage({familyId,api,apiLoading,performApiAction,on
       setSelectedMemberId((current)=>result.members.some((member)=>member.id===current)?current:result.members[0]?.id || null);
     } catch (error) { setLoadError(error.message || '家庭资料加载失败');onError(error); }
   };
-  useEffect(()=>{load();},[familyId]);
+  useEffect(()=>{load();},[familyId,refreshVersion]);
 
   const mutate = async (key,action,successText='家庭资料已更新') => {
     try {
@@ -189,7 +189,8 @@ export function FamilyWorkspacePage({familyId,api,apiLoading,performApiAction,on
       <Col xs={12} md={6}><Card className="small-metric"><Text>开放服务事项</Text><strong>{family.stats.openServiceCount}<span>项</span></strong></Card></Col>
     </Row>
     <div className="family-overview-grid">
-      <FamilyPolicyDiagnosis family={family} />
+      <FamilyPolicyReviewPanel family={family} api={api} apiLoading={apiLoading}
+        performApiAction={performApiAction} onError={onError} onSuccess={onSuccess} onLinkPolicy={openAssociate} onFollowUp={onFollowUp} onFamilyChanged={load} />
       <div className="family-relationship-column">
         <Card className="panel-card family-graph-card" title={<div><Title level={4}>家庭关系</Title><Text className="muted">关系需经人工确认；图谱不会根据姓名推断。</Text></div>} extra={<Space wrap>
           <Button size="small" icon={<PlusOutlined />} onClick={()=>{memberForm.resetFields();setCustomerOptions([]);setCustomerSearch('');setMemberOpen(true);void searchCustomers('');}}>添加成员</Button>
@@ -217,7 +218,12 @@ export function FamilyWorkspacePage({familyId,api,apiLoading,performApiAction,on
               <div className="family-policy-details"><Text>管理客户：{policy.customerName}</Text><Text>人员：{policy.people.length ? policy.people.map((entry)=>`${family.members.find((member)=>member.id===entry.memberId)?.name || '成员'}（${entry.role==='holder'?'投保人':'被保险人'}）`).join('、') : '待关联'}</Text><Text>投保对象：{policy.insuredObjectIds.length ? policy.insuredObjectIds.map((id)=>family.insuredObjects.find((object)=>object.id===id)?.name || '对象').join('、') : '待关联'}</Text><Text>分类：{policy.coverageTags.length ? policy.coverageTags.map((tag)=>coverageLabels[tag]).join('、') : '待分类'}</Text></div>
               <Space className="family-policy-actions" size={8} wrap>
                 <Button size="small" icon={<EditOutlined />} loading={Boolean(apiLoading[`family:policy:link:${policy.id}`])} onClick={()=>openEditPolicy(policy)}>编辑归属</Button>
-                <Popconfirm title="解除这份家庭保单关联？" description="原客户保单和相关服务事项会保留。" okText="解除关联" cancelText="取消" cancelButtonProps={{color:"danger",variant:"outlined"}} okButtonProps={{color:'danger',variant:'outlined'}} onConfirm={()=>mutate(`family:policy:unlink:${policy.id}`,()=>api.unlinkFamilyPolicy(familyId,policy.id),'保单已从家庭解绑')}><Button color="danger" variant="outlined" size="small" loading={Boolean(apiLoading[`family:policy:unlink:${policy.id}`])}>解除关联</Button></Popconfirm>
+                <Popconfirm title="取消这份家庭保单合同关联？" description="原客户保单、PDF 和相关服务事项会保留。" okText="取消关联" cancelText="返回" onConfirm={()=>mutate(`family:policy:unlink:${policy.id}`,async()=>{
+                  const review=await api.familyPolicyReview(familyId);
+                  const source=review.records.find((item)=>item.id===policy.id);
+                  return api.unlinkFamilyPolicySource(familyId,{policyId:policy.id,
+                    contractIds:source?.linkedContractIds||[]});
+                },'保单已从家庭解绑')}><Button color="danger" variant="outlined" size="small" loading={Boolean(apiLoading[`family:policy:unlink:${policy.id}`])}>取消关联</Button></Popconfirm>
               </Space>
             </div>
           </div>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未关联家庭保单" />}

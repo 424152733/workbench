@@ -113,7 +113,8 @@ export class FamilyCoverageOperations {
     const policies = policyResult.rows.map((item) => ({id:Number(item.id),customerId:Number(item.customer_id),
       customerName:item.customer_name,company:item.company,name:item.policy_name,type:item.insurance_type,
       policyNumber:maskPolicyNumber(item.policy_number),holderName:item.holder_name || '',insuredName:item.insured_name || '',
-      premium:item.premium || '',amount:item.coverage_summary || '',verified:Boolean(item.verified),
+      premium:item.premium || '',amount:item.basic_sum_insured?.amount ? `${item.basic_sum_insured.label || '基本保险金额'}：${item.basic_sum_insured.amount}` : item.coverage_summary || '',
+      basicSumInsured:item.basic_sum_insured || null,verified:Boolean(item.verified),
       state:item.verified?'已核实':'待核实',scope:item.service_scope,contractStatus:item.contract_status,
       effectiveDate:pgDate(item.effective_date),expiryDate:pgDate(item.expiry_date),nextPaymentDate:pgDate(item.next_payment_date),
       people:peopleByPolicy.get(Number(item.id)) || [],insuredObjectIds:objectsByPolicy.get(Number(item.id)) || [],
@@ -404,10 +405,18 @@ export class FamilyCoverageOperations {
       }
       await client.query('INSERT INTO family_policies(family_id,policy_id) VALUES($1,$2) ON CONFLICT DO NOTHING',[id,target]);
       await client.query('DELETE FROM family_policy_people WHERE family_id=$1 AND policy_id=$2',[id,target]);
+      await client.query(`DELETE FROM family_contract_people fcp USING family_contracts fc,customer_policy_contracts d
+        WHERE fcp.family_id=$1 AND fc.family_id=fcp.family_id AND fc.contract_id=fcp.contract_id
+          AND d.id=fc.contract_id AND d.policy_id=$2`,[id,target]);
       await client.query('DELETE FROM family_policy_objects WHERE family_id=$1 AND policy_id=$2',[id,target]);
       await client.query('DELETE FROM family_policy_coverage_tags WHERE family_id=$1 AND policy_id=$2',[id,target]);
       for (const person of normalizedPeople) await client.query(`INSERT INTO family_policy_people(family_id,policy_id,member_id,role)
         VALUES($1,$2,$3,$4)`,[id,target,person.memberId,person.role]);
+      await client.query(`INSERT INTO family_contract_people(family_id,contract_id,member_id,role)
+        SELECT fc.family_id,fc.contract_id,fpp.member_id,fpp.role
+        FROM family_contracts fc JOIN customer_policy_contracts d ON d.id=fc.contract_id
+        JOIN family_policy_people fpp ON fpp.family_id=fc.family_id AND fpp.policy_id=d.policy_id
+        WHERE fc.family_id=$1 AND d.policy_id=$2 ON CONFLICT DO NOTHING`,[id,target]);
       for (const objectId of objectIds) await client.query(`INSERT INTO family_policy_objects(family_id,policy_id,object_id)
         VALUES($1,$2,$3)`,[id,target,objectId]);
       for (const tag of tags) await client.query('INSERT INTO family_policy_coverage_tags(family_id,policy_id,tag) VALUES($1,$2,$3)',[id,target,tag]);
@@ -418,8 +427,9 @@ export class FamilyCoverageOperations {
   async unlinkFamilyPolicy(familyId,policyId) {
     const id = positiveId(familyId,'家庭编号');
     const target = positiveId(policyId,'保单编号');
-    const result = await this.db.query('DELETE FROM family_policies WHERE family_id=$1 AND policy_id=$2 RETURNING policy_id',[id,target]);
-    if (!result.rows[0]) throw new NotFoundException('这份保单尚未纳入该家庭');
+    // WorkbenchService composes the family policy review operation; keep the
+    // older endpoint aligned with the unified policy/PDF unlink behavior.
+    await this.unlinkFamilyPolicySource(id,{policyId:target});
     return this.family(id);
   }
 }

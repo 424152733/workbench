@@ -1,0 +1,67 @@
+.family-policy-review { grid-column: 1 / -1; border-radius: 14px !important; }
+.family-policy-review .ant-card-head-title h4 { margin: 0 !important; }
+.family-policy-review .ant-card-head-title .ant-typography { display: block; }
+.family-policy-review-loading { min-height: 150px; display: grid; place-items: center; }
+.family-policy-review-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-bottom: 14px; }
+.family-policy-review-stats > div { min-width: 0; padding: 12px 14px; border: 1px solid #dfe9e3; border-radius: 10px; background: #f5f9f6; }
+.family-policy-review-stats small,.family-policy-review-stats strong { display: block; }
+.family-policy-review-stats small { color: #63776b; }
+.family-policy-review-stats strong { margin-top: 4px; color: #1f735c; font-size: 18px; }
+.family-policy-review-scroll { overflow-x: auto; margin: 16px 0; border: 1px solid #dde7e1; border-radius: 10px; }
+.family-policy-review-mobile-members { display: none; }
+.family-policy-review-matrix { width: 100%; min-width: 880px; border-collapse: collapse; }
+.family-policy-review-matrix th,.family-policy-review-matrix td { min-width: 110px; padding: 11px; border-right: 1px solid #e7eee9; border-bottom: 1px solid #e7eee9; text-align: left; vertical-align: top; }
+.family-policy-review-matrix tr:last-child th,.family-policy-review-matrix tr:last-child td { border-bottom: 0; }
+.family-policy-review-matrix th:last-child,.family-policy-review-matrix td:last-child { border-right: 0; }
+.family-policy-review-matrix thead th { color: #496555; background: #f3f8f4; white-space: nowrap; }
+.family-policy-review-matrix tbody th { min-width: 130px; }
+.family-policy-review-matrix tbody th strong,.family-policy-review-matrix tbody td strong,.family-policy-review-matrix tbody td small { display: block; }
+.family-policy-review-matrix tbody td strong { color: #176f58; }
+.family-policy-review-matrix tbody td small { margin-top: 4px; color: #74857b; }
+.family-policy-review-matrix tbody td .family-policy-review-pending { color: #a36c20; }
+.family-policy-review-cell { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+.family-policy-review-cell:hover strong,.family-policy-review-cell:focus-visible strong { text-decoration: underline; }
+.family-policy-review-cell:focus-visible { outline: 2px solid #227d69; outline-offset: 3px; border-radius: 3px; }
+.family-policy-review-cell-empty { color: #718379; }
+.family-policy-review-detail { padding: 14px 0; border-bottom: 1px solid #e6eee8; }
+.family-policy-review-detail > strong { margin-right: 8px; }
+.family-policy-review-detail > p { margin: 6px 0; color: #64776a; }
+.family-policy-review-benefits { display: grid; gap: 8px; margin-top: 12px; }
+.family-policy-review-benefits > div { padding: 10px; border-radius: 8px; background: #f3f8f4; }
+.family-policy-review-benefits strong,.family-policy-review-benefits span { display: block; }
+.family-policy-review-benefits p { margin: 4px 0; overflow-wrap: anywhere; }
+.family-policy-review-benefits small { color: #6b7c70; }
+.family-policy-review-recommendations h4,.family-policy-review-sources h4 { margin: 18px 0 10px; }
+.family-policy-review-recommendations > div { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,280px),1fr)); gap: 10px; }
+.family-policy-review-recommendations article { padding: 13px; border: 1px solid #e0e8e2; border-radius: 10px; background: #fafcf9; }
+.family-policy-review-recommendations article strong { display: block; margin: 6px 0; }
+.family-policy-review-recommendations article p { margin: 0 0 8px; }
+.family-policy-review-recommendations article small { color: #64776a; }
+.family-policy-review-followup { display: block; margin-top: 10px; }
+.family-policy-review-sources { margin-top: 14px; }
+.family-policy-review-source { display: flex; align-items: center; gap: 10px; padding: 11px 2px; border-bottom: 1px solid #e6eee8; }
+.family-policy-review-source:last-child { border-bottom: 0; }
+.family-policy-review-source > .anticon { color: #bd6760; }
+.family-policy-review-source > div { min-width: 0; flex: 1; }
+.family-policy-review-source strong,.family-policy-review-source small { display: block; overflow-wrap: anywhere; }
+.family-policy-review-source small { color: #76847a; }
+html[data-theme='dark'] .family-policy-review-stats > div,html[data-theme='dark'] .family-policy-review-matrix thead th,html[data-theme='dark'] .family-policy-review-recommendations article { border-color: #35483e; background: #21372c; }
+html[data-theme='dark'] .family-policy-review-scroll,html[data-theme='dark'] .family-policy-review-matrix th,html[data-theme='dark'] .family-policy-review-matrix td,html[data-theme='dark'] .family-policy-review-source { border-color: #35483e; }
+html[data-theme='dark'] .family-policy-review-stats strong,html[data-theme='dark'] .family-policy-review-matrix tbody td strong { color: #8dd6b4; }
+html[data-theme='dark'] .family-policy-review-matrix thead th { color: #c5decf; }
+html[data-theme='dark'] .family-policy-review-benefits > div { background: #21372c; }
+html[data-theme='dark'] .family-policy-review-detail { border-color: #35483e; }
+@media (max-width: 760px) {
+  .family-policy-review-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .family-policy-review-source { flex-wrap: wrap; }
+  .family-policy-review-scroll { display: none; }
+  .family-policy-review-mobile-members { display: grid; gap: 12px; margin: 16px 0; }
+  .family-policy-review-mobile-members > section { overflow: hidden; border: 1px solid #dfe9e3; border-radius: 10px; }
+  .family-policy-review-mobile-members header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: #f3f8f4; }
+  .family-policy-review-mobile-members > section > div { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .family-policy-review-mobile-members > section > div > div { min-width: 0; padding: 10px 12px; border-top: 1px solid #e7eee9; }
+  .family-policy-review-mobile-members > section > div > div:nth-child(odd) { border-right: 1px solid #e7eee9; }
+  .family-policy-review-mobile-members > section > div > div > span { display: block; margin-bottom: 4px; color: #526c5b; font-weight: 600; }
+  html[data-theme='dark'] .family-policy-review-mobile-members > section,html[data-theme='dark'] .family-policy-review-mobile-members > section > div > div { border-color: #35483e; }
+  html[data-theme='dark'] .family-policy-review-mobile-members header { background: #21372c; }
+}

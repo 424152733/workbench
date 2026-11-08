@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { CHANNELS, strictDate } from './workbench-primitives.js';
+import { CONTENT_TYPES } from '../src/features/content/content-types.js';
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -41,6 +42,7 @@ function selectedAssetIds(value) {
 function publicationSummary(row) {
   return {
     id:Number(row.id),draftId:Number(row.draft_id),topicId:row.topic_id,platform:row.platform,
+    contentTypeCode:row.content_type_code,contentTypeName:row.content_type_name || '',
     topicTitle:row.topic_title_snapshot,title:row.title_snapshot,
     publishedOn:row.published_on_text,publishedTime:row.published_time_text || null,
     publishUrl:row.publish_url,note:row.note,status:row.status,origin:row.origin,
@@ -51,7 +53,8 @@ function publicationSummary(row) {
 const publicationSelect = `SELECT p.*,d.topic_id,
   TO_CHAR(p.published_on,'YYYY-MM-DD') AS published_on_text,
   TO_CHAR(p.published_time,'HH24:MI') AS published_time_text
-  FROM content_publications p JOIN drafts d ON d.id=p.draft_id`;
+  FROM content_publications p JOIN drafts d ON d.id=p.draft_id
+  JOIN content_types ct ON ct.code=p.content_type_code`;
 
 async function syncLatestPublication(client,draftId,markPublished = false) {
   const latest = await client.query(`SELECT TO_CHAR(published_on,'YYYY-MM-DD') AS published_on_text,
@@ -77,6 +80,7 @@ export class PublicationOperations {
     const status = filters.status || 'active';
     if (!['active','voided','all'].includes(status)) throw new BadRequestException('发布记录状态无效');
     if (filters.platform && !CHANNELS.includes(filters.platform)) throw new BadRequestException('发布平台无效');
+    if (filters.type && !CONTENT_TYPES.some((item) => item.code === filters.type)) throw new BadRequestException('内容分类无效');
     const from = filters.from ? strictDate(filters.from,'开始日期') : null;
     const to = filters.to ? strictDate(filters.to,'结束日期') : null;
     if (from && to && from > to) throw new BadRequestException('开始日期不能晚于结束日期');
@@ -86,6 +90,7 @@ export class PublicationOperations {
     const add = (fragment,value) => { params.push(value); where.push(fragment.replace('?',`$${params.length}`)); };
     if (status !== 'all') add('p.status=?',status);
     if (filters.platform) add('p.platform=?',filters.platform);
+    if (filters.type) add('p.content_type_code=?',filters.type);
     if (from) add('p.published_on >= ?::date',from);
     if (to) add('p.published_on <= ?::date',to);
     if (filters.topicId) add('d.topic_id=?',String(filters.topicId));
@@ -129,7 +134,7 @@ export class PublicationOperations {
     const assetIds = body.assetIds;
     const normalizedAssetIds = assetIds === undefined ? undefined : selectedAssetIds(assetIds);
     const publicationId = await this.db.transaction(async (client) => {
-      const draft = await client.query(`SELECT d.*,t.title AS topic_title FROM drafts d JOIN topics t ON t.id=d.topic_id
+      const draft = await client.query(`SELECT d.*,t.title AS topic_title,t.content_type_code FROM drafts d JOIN topics t ON t.id=d.topic_id
         WHERE d.topic_id=$1 AND d.platform=$2 FOR UPDATE OF d`,[topicId,platform]);
       const row = draft.rows[0];
       if (!row) throw new NotFoundException('找不到这个平台的稿件');
@@ -156,12 +161,19 @@ export class PublicationOperations {
       if (selectedIds.some((id) => !assetMap.has(id))) throw new BadRequestException('所选配图不属于当前稿件');
       const snapshot = {
         title:row.title,summary:row.summary,body:row.body,hashtags:row.hashtags,sources:row.sources,
-        cardPlan:row.xhs_card_plan || [],htmlContent:row.html_content,
+        cardPlan:row.xhs_card_plan || [],htmlContent:row.html_content,contentTypeCode:row.content_type_code,
       };
+      if (row.content_type_code === 'product_explainer') {
+        const source = await client.query('SELECT source_snapshot FROM content_topic_products WHERE topic_id=$1',[topicId]);
+        snapshot.sourceContext=source.rows[0]?.source_snapshot || null;
+      } else if (row.content_type_code === 'customer_case') {
+        const source = await client.query('SELECT case_kind FROM content_topic_cases WHERE topic_id=$1',[topicId]);
+        snapshot.sourceContext=source.rows[0] ? {caseKind:source.rows[0].case_kind} : null;
+      }
       const inserted = await client.query(`INSERT INTO content_publications
-        (draft_id,platform,topic_title_snapshot,title_snapshot,published_on,published_time,publish_url,note,content_snapshot,request_key)
-        VALUES($1,$2,$3,$4,$5::date,$6::time,$7,$8,$9::jsonb,$10) RETURNING id`,
-      [row.id,platform,row.topic_title,row.title,publishedOn,publishedTime,url,note,JSON.stringify(snapshot),key]);
+        (draft_id,platform,topic_title_snapshot,title_snapshot,published_on,published_time,publish_url,note,content_snapshot,content_type_code,request_key)
+        VALUES($1,$2,$3,$4,$5::date,$6::time,$7,$8,$9::jsonb,$10,$11) RETURNING id`,
+      [row.id,platform,row.topic_title,row.title,publishedOn,publishedTime,url,note,JSON.stringify(snapshot),row.content_type_code,key]);
       const id = Number(inserted.rows[0].id);
       for (const [position,assetId] of selectedIds.entries()) {
         await client.query(`INSERT INTO content_publication_assets(publication_id,asset_id,position,file_name_snapshot)
