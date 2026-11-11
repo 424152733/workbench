@@ -61,7 +61,7 @@ export function PolicyContractOrganizer({customer,api,apiLoading,performApiActio
       await refresh();
       setActiveId(result.id);
       onContractsChanged?.();
-      onSuccess(result.parseStatus==='needs_ocr' ? '已保存文件；当前版本无法识别扫描件文字' : '合同已在本地解析，AI 尚未调用');
+      onSuccess(result.parseStatus==='needs_ocr' ? '已保存文件；本机 OCR 未能识别文字' : '合同已在本地解析，AI 尚未调用');
     } catch(error) { onError(error); }
   };
 
@@ -86,9 +86,12 @@ export function PolicyContractOrganizer({customer,api,apiLoading,performApiActio
   };
 
   const exportOrganizer = async () => {
+    const pending=documents.filter((document)=>!['已整理','已归档'].includes(document.analysisStatus) ||
+      Number(document.extraction?.schemaVersion || 0)<10 || document.extraction?.completeness?.complete!==true);
+    if (pending.length) { onError(new Error(`还有 ${pending.length} 份合同未完成最新版 AI 整理，请先逐份整理再导出。`)); return; }
     try {
-      await performApiAction(exportKey,()=>api.exportPolicyOrganizer(customer.id,customer.name));
-      onSuccess('家庭保单整理表已导出');
+      await performApiAction(exportKey,()=>api.exportPolicyOrganizer(customer.id,customer.name,true));
+      onSuccess('含 AI 保障诊断的保单整理表已导出');
     } catch(error) { onError(error); }
   };
 
@@ -118,23 +121,26 @@ export function PolicyContractOrganizer({customer,api,apiLoading,performApiActio
   };
 
   const result=activeDocument?.extraction;
+  const needsFullTextUpdate=Boolean(activeDocument) && (
+    Number(activeDocument.parserVersion || 0)<4 || (Boolean(result) && Number(result.schemaVersion || 0)<10)
+  );
   const contractDates=extractPolicyContractDates(result?.policy || {});
   const warnings=activeDocument?.warnings || [];
   const benefits=prepareBenefitsForDisplay(result?.benefits || [],result?.policy || {});
 
   return <Card className="panel-card customer-detail-section policy-contract-organizer"
     title={<div><Title level={4}>保单合同整理</Title><Text className="muted">上传客户提供的 PDF，整理保障责任与需要核对的信息。</Text></div>}>
-    <Alert type="info" showIcon message="先在本地筛选，再由 AI 整理短摘录" description="合同原件保存在本地工作台。点击 AI 整理前会先显示筛选范围；只有你确认已取得客户授权并同意后，筛出的短摘录才会发送至当前配置的 AI 服务。身份证号、手机号、保单号和常见姓名字段会先做本地遮盖；其余内容仍请按授权范围使用。" />
+    <Alert type="info" showIcon message="本地逐页提取文字，AI 逐段整理整份合同" description="合同原件保存在本地工作台。图片页面先由本机 OCR 识别，再遮盖常见身份信息；取得客户授权后，合同文字按页分段发送至当前配置的 AI 服务。" />
     <div className="policy-contract-upload-row">
       <div className="policy-contract-upload-actions">
         <Upload accept=".pdf,application/pdf" maxCount={1} fileList={selectedFile?[{uid:'selected-contract',name:selectedFile.name,status:'done'}]:[]}
           beforeUpload={(file)=>{setSelectedFile(file);return false;}} onRemove={()=>{setSelectedFile(null);return true;}}>
           <Button icon={<UploadOutlined />}>选择 PDF 合同</Button>
         </Upload>
-        <Button type="primary" loading={Boolean(apiLoading[uploadKey])} disabled={!selectedFile} onClick={upload}>上传并本地筛页</Button>
-        <Button icon={<DownloadOutlined />} loading={Boolean(apiLoading[exportKey])} disabled={!hasExportableData} onClick={exportOrganizer}>导出家庭保单整理表</Button>
+        <Button type="primary" loading={Boolean(apiLoading[uploadKey])} disabled={!selectedFile} onClick={upload}>上传并提取文本</Button>
+        <Button icon={<DownloadOutlined />} loading={Boolean(apiLoading[exportKey])} disabled={!hasExportableData} onClick={exportOrganizer}>AI 诊断并导出 Excel</Button>
       </div>
-      <Text className="muted">最大 25 MB；扫描版 PDF 暂不支持 OCR。导出时读取本机原合同保单页补充已识别字段，仍需对照原件核对。</Text>
+      <Text className="muted">最大 25 MB、300 页；文字上限 120,000 字。图片页面在本机识别；全部合同整理完成后可导出，诊断会另行调用 AI。</Text>
     </div>
 
     {loading ? <div className="policy-contract-loading"><Spin /> 正在读取合同档案</div> : documents.length ? <div className="policy-contract-list">
@@ -145,7 +151,7 @@ export function PolicyContractOrganizer({customer,api,apiLoading,performApiActio
     </div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有上传保单合同" />}
 
     {activeDocument ? <div className="policy-contract-active">
-      <div className="policy-contract-active-head"><div className="policy-contract-active-copy"><Text strong title={activeDocument.fileName}>{activeDocument.fileName}</Text><Text className="schedule-meta">{activeDocument.pageCount ?? '页数未知'} 页{activeDocument.policyId?' · 已归档，责任摘要见上方保障检视':` · 已选 ${activeDocument.selectedPageCount} 页 · ${activeDocument.selectedChars.toLocaleString()} 字 · 预计输入约 ${activeDocument.estimatedInputTokens.toLocaleString()} tokens · ${activeDocument.chunkCount} 个小段`}</Text></div>
+      <div className="policy-contract-active-head"><div className="policy-contract-active-copy"><Text strong title={activeDocument.fileName}>{activeDocument.fileName}</Text><Text className="schedule-meta">{activeDocument.pageCount ?? '页数未知'} 页{needsFullTextUpdate?' · 旧版整理结果，更新时将重读全部可提取文字':` · AI 整理 ${activeDocument.selectedPageCount} 页 · ${activeDocument.selectedChars.toLocaleString()} 字 · 预计输入约 ${activeDocument.estimatedInputTokens.toLocaleString()} tokens · ${activeDocument.chunkCount} 个小段`}</Text></div>
         <Space className="policy-contract-head-actions" size={8}>
           <Button size="small" icon={<FileSearchOutlined />} onClick={()=>window.open(api.policyContractFileUrl(customer.id,activeDocument.id),'_blank','noopener,noreferrer')}>下载原合同</Button>
           <Popconfirm title="删除这份合同和整理结果？" description="删除后不能从工作台恢复。" okText="删除" cancelText="取消" onConfirm={()=>removeDocument(activeDocument)}>
@@ -155,10 +161,19 @@ export function PolicyContractOrganizer({customer,api,apiLoading,performApiActio
       </div>
       {!activeDocument.policyId && activeDocument.localFacts?.basicSumInsured ? <Alert className="policy-contract-warning" type="success" showIcon message={`${activeDocument.localFacts.basicSumInsured.label}：${activeDocument.localFacts.basicSumInsured.amount}（合同第 ${activeDocument.localFacts.basicSumInsured.page} 页）`} description="此金额由本地规则读取合同明确字段，没有额外调用 AI。" /> : null}
       {!activeDocument.policyId ? warnings.map((warning,index)=><Alert key={`${activeDocument.id}-warning-${index}`} className="policy-contract-warning" type="warning" showIcon message={warning} />) : null}
-      {activeDocument.parseStatus==='needs_ocr' ? <Alert type="warning" showIcon message="这份 PDF 可能是扫描件" description="文件已保存在本地，但没有识别到可复制文字；目前版本不调用 OCR，也不会发送给 AI。" /> : activeDocument.policyId ? <Alert className="policy-contract-warning" type="success" showIcon message="这份合同已归档到客户保单档案" description="保单状态、关键金额和分类责任统一在上方“保障检视”中查看；这里保留原合同与完整整理结果。" /> : <>
-        <Alert className="policy-contract-scope" type="info" showIcon message="本次输入范围" description={`本地筛选出 ${activeDocument.selectedPageCount}/${activeDocument.pageCount} 页，AI 只会收到约 ${activeDocument.selectedChars.toLocaleString()} 字的脱敏摘录，不会收到整份 PDF。预计输入约 ${activeDocument.estimatedInputTokens.toLocaleString()} tokens、${activeDocument.chunkCount} 次基础请求；每段输出上限为 2,000 tokens，超限会拆小重试，未完成会明确标记。`} />
-        <Checkbox checked={consent} onChange={(event)=>setConsent(event.target.checked)}>我已取得客户授权，同意发送上述筛选后的合同文字片段至当前配置的 AI 服务。</Checkbox>
-        <div className="policy-contract-actions"><Button type="primary" loading={Boolean(apiLoading[analyzeKey])} disabled={!consent || activeDocument.policyId || (activeDocument.analysisStatus==='已整理' && Number(result?.schemaVersion || 0)>=3)} onClick={analyze}>{activeDocument.analysisStatus==='部分完成'?'继续整理':activeDocument.analysisStatus==='已整理'?'更新整理结果':'开始 AI 整理'}</Button><Text className="muted">AI 不会看到未筛选页；显示的 token 数是估算值，完成后会显示服务返回的实际用量。</Text></div>
+      {activeDocument.parseStatus==='needs_ocr' ? <Alert type="warning" showIcon message="合同图片文字尚未识别" description="点击下方整理时会先在本机运行 OCR；仍无法读取时请上传更清晰的 PDF。" /> : null}
+      {activeDocument.policyId ? <>
+        <Alert className="policy-contract-warning" type="success" showIcon message="这份合同已归档到客户保单档案" description="保单状态、关键金额和分类责任统一在上方“保障检视”中查看；这里保留原合同与完整整理结果。" />
+        {needsFullTextUpdate || activeDocument.analysisStatus==='部分完成' ? <>
+          {needsFullTextUpdate ? <Alert type="info" showIcon message="旧结果可能漏项，建议按新流程重新整理" description="更新时会从本机原合同重新提取所有可提取页面的文字（含本机 OCR），进行常见身份信息遮盖后分段发送给 AI；单份合同上限为 120,000 字、16 个基础分段，超出会提示拆分，不会静默截掉后半部分。" /> : null}
+          <div className="policy-contract-actions"><Checkbox checked={consent} onChange={(event)=>setConsent(event.target.checked)}>我已取得客户授权，同意将整份合同可读取文字的脱敏分段发送至当前配置的 AI 服务。</Checkbox><Button loading={Boolean(apiLoading[analyzeKey])} disabled={!consent} onClick={analyze}>{needsFullTextUpdate?'重新整理整份合同':'继续整理未完成部分'}</Button><Text className="muted">此操作会重新调用 AI；导出 Excel 不调用保单整理模型。</Text></div>
+        </> : null}
+      </> : <>
+        <Alert className="policy-contract-scope" type="info" showIcon message="本次输入范围" description={needsFullTextUpdate
+          ? `旧版文本筛选计划会在整理时重建。AI 将接收合同所有可提取页面的脱敏文字（含本机 OCR）分段，最多 120,000 字、16 个基础请求；超出上限会提示拆分，不会只处理前半份。`
+          : `AI 将接收合同所有可提取页面的脱敏文字（含本机 OCR）：${activeDocument.selectedPageCount}/${activeDocument.pageCount} 页，约 ${activeDocument.selectedChars.toLocaleString()} 字，预计输入约 ${activeDocument.estimatedInputTokens.toLocaleString()} tokens、${activeDocument.chunkCount} 个分段；每段输出上限为 2,000 tokens，超限会拆小重试。`} />
+        <Checkbox checked={consent} onChange={(event)=>setConsent(event.target.checked)}>我已取得客户授权，同意将整份合同可读取文字的脱敏分段发送至当前配置的 AI 服务。</Checkbox>
+        <div className="policy-contract-actions"><Button type="primary" loading={Boolean(apiLoading[analyzeKey])} disabled={!consent || (!needsFullTextUpdate && activeDocument.analysisStatus==='已整理' && Number(result?.schemaVersion || 0)>=10)} onClick={analyze}>{activeDocument.analysisStatus==='部分完成'&&!needsFullTextUpdate?'继续整理未完成部分':needsFullTextUpdate&&result?'重新整理整份合同':activeDocument.analysisStatus==='已整理'?'更新整理结果':'开始 AI 整理'}</Button><Text className="muted">开始后按页码分段读取全部可提取文字；完成后显示服务实际用量。</Text></div>
       </>}
 
       {result ? <Collapse className="policy-contract-result-collapse" key={`contract-result-${activeDocument.id}-${activeDocument.policyId?'archived':'review'}`}
@@ -185,6 +200,13 @@ export function PolicyContractOrganizer({customer,api,apiLoading,performApiActio
           {item.sharedLimit ? <Text className="policy-contract-benefit-shared-limit">共用一般医疗年度限额：{item.sharedLimit}（按保障计划适用，不是单项额外额度）</Text> : null}
           {item.paymentMethod ? <Text className="muted">给付方式：{item.paymentMethod}</Text> : null}
           {item.summary ? <Text>{item.summary}</Text> : null}{item.conditions ? <Text className="muted">条件：{item.conditions}</Text> : null}
+          {item.scenarios?.some((scenario)=>scenario.evidenceVerified) ? <div className="policy-contract-scenarios">
+            {item.scenarios.filter((scenario)=>scenario.evidenceVerified).map((scenario,scenarioIndex)=><div className="policy-contract-scenario" key={`${scenario.trigger}-${scenario.page}-${scenarioIndex}`}>
+              <strong>{scenario.trigger || '合同约定情形'}</strong><span>{scenario.amount || '金额待核对'}</span>
+              {[scenario.limit,scenario.conditions,scenario.relation].filter(Boolean).map((detail,detailIndex)=><small key={detailIndex}>{detail}</small>)}
+              {scenario.page ? <small>合同第 {scenario.page} 页</small> : null}
+            </div>)}
+          </div> : null}
         </div>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有提取到明确的保障责任；请检查合同或重新整理" />}
         {!activeDocument.policyId ? <><Title level={5}>保存前核对</Title><Alert className="policy-contract-suggestion" type="info" showIcon message="核对产品信息、被保险人、保障责任和缴费情况后，再保存到客户保单档案；保存后会纳入整体保障检视。" /></> : <Alert className="policy-contract-suggestion" type="success" showIcon message="已归档到已有保单；保障汇总与分类明细见上方“保障检视”。" />}
         {result.uncertainties?.length ? <div className="policy-contract-uncertainties"><Text strong>还需核对</Text>{result.uncertainties.map((item,index)=><Text key={`uncertainty-${index}`}>· {item}</Text>)}</div> : null}

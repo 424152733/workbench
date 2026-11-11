@@ -101,9 +101,15 @@ function deduplicateBenefits(benefits) {
 export function summarizeDiseaseDefinitions(benefits=[]) {
   if (!benefits.length) return '';
   const names=benefits.slice(0,4).map((benefit)=>benefit.name).filter(Boolean);
-  const extra=benefits.length>names.length ? `等${benefits.length}项` : '';
-  const pages=[...new Set(benefits.flatMap((benefit)=>benefit.pages || [benefit.page]).filter(Boolean))].sort((a,b)=>a-b);
-  return `合同疾病定义：${names.join('、')}${extra}${pages.length?`（合同第 ${pages.join('、')} 页）`:''}`;
+  const extra=benefits.length>names.length ? '等' : '';
+  return `已摘录的疾病定义：${names.join('、')}${extra}`;
+}
+
+export function formatDiseaseCounts(counts) {
+  const values=[['critical','重疾'],['light','轻症']]
+    .filter(([key])=>Number.isSafeInteger(counts?.[key]) && counts[key]>0)
+    .map(([key,label])=>`${label} ${counts[key]} 种`);
+  return values.join(' · ') || '病种总数待核对';
 }
 
 function responsibilityOnlyLabel(categoryKey) {
@@ -317,6 +323,7 @@ export function buildCoverageReview({customer,policies=[],contracts=[],profile={
         verified:record.verified,contractStatus:record.contractStatus,contractId:record.contract?.id || null,
         isProvisional:Boolean(record.isProvisional),evidenceSource:record.contract?.localBenefits?.length ? 'original' : record.contract?.extraction?.complete ? 'ai' : '',
         responsibilityOnly:!record.productCategories.includes(category.key),
+        diseaseCounts:record.contract?.diseaseCounts || null,
         basicSumInsured:record.basicSumInsured || record.contract?.extraction?.policy?.basicSumInsured || null,
         fileName:record.fileName,benefits:categoryEvidence(category.key,record,record.contract)})),benefits};
   });
@@ -390,8 +397,8 @@ export function renderCoverageReviewHtml(analysis) {
       const benefitRows=policy.benefits.filter((benefit)=>benefit.kind!=='definition');
       const definitions=policy.benefits.filter((benefit)=>benefit.kind==='definition');
       const benefitHtml=benefitRows.map((benefit)=>`<p class="benefit">${escapeHtml(benefit.name)}${benefit.amount?`：${escapeHtml(benefit.amount)}`:''}${benefit.paymentMethod?` · ${escapeHtml(benefit.paymentMethod)}`:''}${benefitPageLabel(benefit)?` · ${escapeHtml(benefitPageLabel(benefit))}`:''}${benefit.unclassified?' · 合同其他权益（暂未自动归类）':''}${benefit.note?`<br>${escapeHtml(benefit.note)}`:''}${benefit.summary?`<br>${escapeHtml(benefit.summary)}`:''}${benefit.conditions?`<br><b>给付条件：</b>${escapeHtml(benefit.conditions)}`:''}</p>`).join('');
-      const definitionHtml=definitions.map((benefit)=>`<p class="benefit"><b>${escapeHtml(benefit.name || '疾病定义')}</b>${benefitPageLabel(benefit)?` · ${escapeHtml(benefitPageLabel(benefit))}`:''}${benefit.summary?`<br>${escapeHtml(benefit.summary)}`:''}${benefit.conditions?`<br><b>认定条件：</b>${escapeHtml(benefit.conditions)}`:''}</p>`).join('');
-      return `<article><strong>${escapeHtml(policy.company)} · ${escapeHtml(policy.name)}</strong><p>${escapeHtml(policy.insuredName)} · ${escapeHtml(statusText(policy))}${policy.responsibilityOnly?` · ${escapeHtml(responsibilityOnlyNote(category.key))}`:''}</p>${!policy.responsibilityOnly&&policy.basicSumInsured?.amount?`<p class="benefit"><b>${escapeHtml(policy.basicSumInsured.label || '基本保险金额')}：${escapeHtml(policy.basicSumInsured.amount)}</b>${policy.basicSumInsured.page?` · 合同第 ${policy.basicSumInsured.page} 页`:''}</p>`:''}${!policy.responsibilityOnly&&policy.coverageSummary?`<p>${escapeHtml(policy.coverageSummary)}</p>`:''}${benefitHtml}${definitions.length?`<div><p class="benefit"><b>疾病定义范围 · ${definitions.length} 项</b></p>${definitionHtml}</div>`:''}</article>`;
+      const definitionHtml=definitions.map((benefit)=>`<p class="benefit"><b>${escapeHtml(benefit.name || '疾病定义')}</b>${benefit.summary?`<br>${escapeHtml(benefit.summary)}`:''}${benefit.conditions?`<br><b>认定条件：</b>${escapeHtml(benefit.conditions)}`:''}</p>`).join('');
+      return `<article><strong>${escapeHtml(policy.company)} · ${escapeHtml(policy.name)}</strong><p>${escapeHtml(policy.insuredName)} · ${escapeHtml(statusText(policy))}${policy.responsibilityOnly?` · ${escapeHtml(responsibilityOnlyNote(category.key))}`:''}</p>${category.key==='critical'?`<p class="benefit"><b>${escapeHtml(formatDiseaseCounts(policy.diseaseCounts))}</b></p>`:''}${!policy.responsibilityOnly&&policy.basicSumInsured?.amount?`<p class="benefit"><b>${escapeHtml(policy.basicSumInsured.label || '基本保险金额')}：${escapeHtml(policy.basicSumInsured.amount)}</b>${policy.basicSumInsured.page?` · 合同第 ${policy.basicSumInsured.page} 页`:''}</p>`:''}${!policy.responsibilityOnly&&policy.coverageSummary?`<p>${escapeHtml(policy.coverageSummary)}</p>`:''}${benefitHtml}${definitions.length?`<div><p class="benefit"><b>已摘录的疾病定义</b></p>${definitionHtml}</div>`:''}</article>`;
     }).join('')}</section>`;
   }).join('');
   const categorizedPolicyIds=new Set(analysis.categories.flatMap((category)=>category.policies.map((policy)=>policy.id)));

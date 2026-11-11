@@ -70,8 +70,9 @@ export const api = {
   },
   saveFamilyCoverageContext: (familyId,body) => request(`/families/${familyId}/coverage-context`,json('PUT',body)),
   saveFamilyMemberCoverageProfile: (familyId,memberId,body) => request(`/families/${familyId}/members/${memberId}/coverage-profile`,json('PUT',body)),
-  exportFamilyPolicyOrganizer: async (familyId,familyName='家庭') => {
-    const response=await fetch(`/api/families/${familyId}/policy-organizer/export`);
+  exportFamilyPolicyOrganizer: async (familyId,familyName='家庭',withDiagnosis=false) => {
+    const response=await fetch(`/api/families/${familyId}/policy-organizer/${withDiagnosis?'export-with-diagnosis':'export'}`,
+      withDiagnosis?{method:'POST'}:{});
     if(!response.ok) {
       const payload=await response.json().catch(()=>({}));
       throw new Error(Array.isArray(payload.message)?payload.message.join('；'):payload.message||'家庭保单整理表导出失败');
@@ -97,8 +98,9 @@ export const api = {
   deletePolicyContract: (customerId,documentId) => request(`/customers/${customerId}/policy-contracts/${documentId}`,{method:'DELETE'}),
   savePolicyContractAsPolicy: (customerId,documentId,body) => request(`/customers/${customerId}/policy-contracts/${documentId}/save-policy`,json('POST',body)),
   syncPolicyContractScheduleFacts: (customerId,documentId) => request(`/customers/${customerId}/policy-contracts/${documentId}/sync-schedule-facts`,json('POST',{})),
-  exportPolicyOrganizer: async (customerId,customerName='客户') => {
-    const response=await fetch(`/api/customers/${customerId}/policy-organizer/export`);
+  exportPolicyOrganizer: async (customerId,customerName='客户',withDiagnosis=false) => {
+    const response=await fetch(`/api/customers/${customerId}/policy-organizer/${withDiagnosis?'export-with-diagnosis':'export'}`,
+      withDiagnosis?{method:'POST'}:{});
     if (!response.ok) {
       const contentType=response.headers.get('content-type') || '';
       let message='保单整理表导出失败';

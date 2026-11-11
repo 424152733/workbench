@@ -87,6 +87,13 @@ export class ApiController {
   saveFamilyMemberCoverageProfile(req) { return this.service.saveFamilyMemberCoverageProfile(req.params.familyId,req.params.memberId,req.body); }
   async exportFamilyPolicyOrganizer(req,response) {
     const file=await this.service.exportFamilyPolicyOrganizer(req.params.familyId);
+    this.sendPolicyOrganizerFile(response,file);
+  }
+  async exportFamilyPolicyOrganizerWithDiagnosis(req,response) {
+    const file=await this.service.exportFamilyPolicyOrganizer(req.params.familyId,{withDiagnosis:true});
+    this.sendPolicyOrganizerFile(response,file);
+  }
+  sendPolicyOrganizerFile(response,file) {
     response.setHeader('Content-Type',file.mimeType);
     response.setHeader('Content-Length',String(file.buffer.length));
     response.setHeader('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
@@ -108,11 +115,11 @@ export class ApiController {
   syncPolicyContractScheduleFacts(req) { return this.service.syncPolicyContractScheduleFacts(req.params.id,req.params.documentId); }
   async exportPolicyOrganizer(req,response) {
     const file=await this.service.exportPolicyOrganizer(req.params.id);
-    response.setHeader('Content-Type',file.mimeType);
-    response.setHeader('Content-Length',String(file.buffer.length));
-    response.setHeader('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`);
-    response.setHeader('X-Content-Type-Options','nosniff');
-    response.send(file.buffer);
+    this.sendPolicyOrganizerFile(response,file);
+  }
+  async exportPolicyOrganizerWithDiagnosis(req,response) {
+    const file=await this.service.exportPolicyOrganizer(req.params.id,{withDiagnosis:true});
+    this.sendPolicyOrganizerFile(response,file);
   }
   verifyPolicy(req) { return this.service.verifyPolicy(req.params.policyId,req.body.verified); }
   policyLifecycle(req) { return this.service.policyLifecycle(req.params.policyId); }
@@ -251,7 +258,9 @@ route(Delete,'families/:familyId/policy-review/source','unlinkFamilyPolicySource
 route(Put,'families/:familyId/coverage-context','saveFamilyCoverageContext');
 route(Put,'families/:familyId/members/:memberId/coverage-profile','saveFamilyMemberCoverageProfile');
 route(Get,'families/:familyId/policy-organizer/export','exportFamilyPolicyOrganizer',[0]);
+route(Post,'families/:familyId/policy-organizer/export-with-diagnosis','exportFamilyPolicyOrganizerWithDiagnosis',[0]);
 Res()(ApiController.prototype,'exportFamilyPolicyOrganizer',1);
+Res()(ApiController.prototype,'exportFamilyPolicyOrganizerWithDiagnosis',1);
 route(Post,'customers/:id/follow-up-tasks','createFollowUpTask');
 route(Patch,'follow-up-tasks/:taskId','updateFollowUpTask');
 route(Post,'follow-up-tasks/:taskId/complete','completeFollowUpTask');
@@ -260,7 +269,9 @@ route(Post,'customers/:id/policies','createPolicy');
 route(Delete,'customers/:id/policies/:policyId','deletePolicy');
 route(Get,'customers/:id/policy-contracts','listPolicyContracts');
 route(Get,'customers/:id/policy-organizer/export','exportPolicyOrganizer',[0]);
+route(Post,'customers/:id/policy-organizer/export-with-diagnosis','exportPolicyOrganizerWithDiagnosis',[0]);
 Res()(ApiController.prototype,'exportPolicyOrganizer',1);
+Res()(ApiController.prototype,'exportPolicyOrganizerWithDiagnosis',1);
 route(Post,'customers/:id/policy-contracts','uploadPolicyContract');
 route(Post,'customers/:id/policy-contracts/:documentId/analyze','analyzePolicyContract');
 route(Delete,'customers/:id/policy-contracts/:documentId','deletePolicyContract');

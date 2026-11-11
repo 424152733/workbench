@@ -296,7 +296,7 @@ export class FamilyPolicyReviewOperations {
         annualPremiumTotal:annual.reduce((sum,value)=>sum+value,0),annualPremiumCount:annual.length},asOfDate:today};
   }
 
-  async exportFamilyPolicyOrganizer(familyIdValue) {
+  async exportFamilyPolicyOrganizer(familyIdValue,{withDiagnosis=false}={}) {
     const review=await this.familyPolicyReview(familyIdValue);
     const customerIds=[...new Set(review.members.map((member)=>member.customerId).filter(Boolean))];
     const prepared=await Promise.all(customerIds.map((customerId)=>this.preparePolicyOrganizerData(customerId)));
@@ -319,8 +319,12 @@ export class FamilyPolicyReviewOperations {
     const members=review.members.map((member)=>({
       ...member,phone:prepared.find((bundle)=>bundle.customer.id===member.customerId)?.customer.phone || '',
     }));
+    const records=[...selected.values()];
+    const customer={name:review.family.name,phone:''};
+    const diagnoses=withDiagnosis?await this.policyOrganizerDiagnoses({customer,members,records,
+      preparedOn:review.asOfDate,context:review.context}):null;
     const {workbook}=buildPolicyOrganizerWorkbook({
-      customer:{name:review.family.name,phone:''},members,records:[...selected.values()],preparedOn:review.asOfDate,
+      customer,members,records,preparedOn:review.asOfDate,diagnoses,
     });
     return {buffer:Buffer.from(await workbook.xlsx.writeBuffer()),
       mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

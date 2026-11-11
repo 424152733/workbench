@@ -116,8 +116,8 @@ export function FamilyPolicyReviewPanel({family,api,apiLoading,performApiAction,
     const key=`family:policy-export:${familyId}`;
     if(apiLoading[key])return;
     try {
-      await performApiAction(key,()=>api.exportFamilyPolicyOrganizer(familyId,family.name));
-      onSuccess('家庭保单整理表已导出');
+      await performApiAction(key,()=>api.exportFamilyPolicyOrganizer(familyId,family.name,true));
+      onSuccess('含 AI 保障诊断的家庭保单整理表已导出');
     } catch(error){onError(error);}
   };
 
@@ -126,7 +126,7 @@ export function FamilyPolicyReviewPanel({family,api,apiLoading,performApiAction,
     <Button size="small" icon={<PlusOutlined />} loading={Boolean(apiLoading[`family:contract-candidates:${familyId}`])} onClick={openLink}>关联 / 调整 PDF</Button>
     <Button size="small" icon={<UploadOutlined />} onClick={()=>{uploadForm.setFieldsValue({customerId:family.primaryCustomerId,insuredMemberIds:[]});setFile(null);setUploadOpen(true);}}>上传合同</Button>
     <Button size="small" disabled={!review} onClick={()=>{contextForm.setFieldsValue(review.context);setContextOpen(true);}}>家庭责任与目标</Button>
-    <Button size="small" icon={<DownloadOutlined />} disabled={!review} loading={Boolean(apiLoading[`family:policy-export:${familyId}`])} onClick={exportXlsx}>导出 Excel</Button>
+    <Button size="small" icon={<DownloadOutlined />} disabled={!review} loading={Boolean(apiLoading[`family:policy-export:${familyId}`])} onClick={exportXlsx}>AI 诊断并导出 Excel</Button>
   </Space>}>
     {!review ? <div className="family-policy-review-loading"><Spin description="正在整理家庭保单" /></div> : <>
       <div className="family-policy-review-stats">
@@ -135,7 +135,7 @@ export function FamilyPolicyReviewPanel({family,api,apiLoading,performApiAction,
         <div><small>待核对 / 待分配</small><strong>{review.summary.pendingCount} / {review.summary.unassignedCount}</strong></div>
         <div><small>已识别年交保费 · 续缴待核</small><strong>{currency(review.summary.annualPremiumTotal)}</strong></div>
       </div>
-      <Alert type="info" showIcon title="按成员和责任分别看" description="待核对合同不计入已确认保障；身故与意外身价可能是同一责任，不能相加。没有记录不等于没有保障。" />
+      <Alert type="info" showIcon title="按成员和责任分别看" description="待核对合同不计入已确认保障；身故与意外身价可能是同一责任，不能相加。没有记录不等于没有保障。导出诊断时，仅将匿名保障摘要发送给 AI。" />
       <div className="family-policy-review-scroll"><table className="family-policy-review-matrix"><thead><tr><th>成员</th>
         {review.members[0]?.coverages.map((entry)=><th key={entry.key}>{entry.label}</th>)}
       </tr></thead><tbody>{review.members.map((member)=><tr key={member.id}><th scope="row"><strong>{member.displayName}</strong>

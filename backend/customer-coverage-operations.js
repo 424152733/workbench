@@ -92,7 +92,7 @@ export class CustomerCoverageOperations {
         FROM customer_policy_contracts WHERE customer_id=$1 AND coverage_excluded_at IS NULL ORDER BY created_at DESC,id DESC`,[customerId]),
     ]);
     const contracts=await Promise.all(contractResult.rows.map(async(row)=>{
-      let evidence={facts:{},benefits:[]};
+      let evidence={facts:{},benefits:[],diseaseCounts:{critical:null,light:null}};
       try {
         evidence=await loadPolicyContractLocalEvidence({storageName:row.storage_name,fileName:row.file_name,parseStatus:row.parse_status});
       } catch {
@@ -114,6 +114,7 @@ export class CustomerCoverageOperations {
           expiryDate:facts.expiryDate || '',basicSumInsured:facts.basicSumInsured || null,
         } : null,
         localBenefits:evidence.benefits,
+        diseaseCounts:evidence.diseaseCounts,
         createdAt:row.created_at,
       };
     }));

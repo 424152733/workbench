@@ -1,8 +1,9 @@
 import ExcelJS from 'exceljs';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { beijingDate } from './workbench-primitives.js';
 import { normalizedPolicyName } from './policy-contract-export-facts.js';
 import { loadPolicyContractLocalEvidence } from './policy-contract-local-evidence.js';
+import { responsibilityBlocks } from './policy-responsibility-format.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const parseJson = (value,fallback=null) => {
@@ -22,15 +23,34 @@ const cleanMultilineText = (value,max=4000) => {
     .split(/\r?\n/).map((line)=>line.replace(/[ \t]+/g,' ').trim()).filter(Boolean).join('\n').slice(0,max);
   return /^[=+\-@]/.test(result) ? `'${result}` : result;
 };
-const displayProductName = (value) => nonempty(value).replace(/\s*[（(](?:原合同待核对|已整理待核对|整理未完成|待核实|已核实)[）)]\s*$/,'');
+const displayProductName = (value) => nonempty(value)
+  .replace(/(?:[，,\n\s]*)合同(?:编号|号码|号)\s*[:：]?\s*[A-Za-z0-9-]{6,40}[\s\S]*$/i,'')
+  .replace(/\s*[（(](?:原合同待核对|已整理待核对|整理未完成|待核实|已核实)[）)]\s*$/,'');
+const shortCompanyName = (value) => {
+  const name=nonempty(value);
+  if (/新华/.test(name)) return '新华人寿';
+  if (/平安/.test(name)) return '中国平安';
+  if (/中国人寿|国寿/.test(name)) return '中国人寿';
+  return name.replace(/保险(?:股份)?有限公司$|保险有限责任公司$|股份有限公司$|有限责任公司$/,'');
+};
 
-function preferDetailedPremium(stored,fromContract) {
-  if (!stored) return fromContract || '';
-  if (!fromContract) return stored;
-  const hasFrequency=/(每年|年交|年缴|每月|月交|一次交清|趸交)/.test(stored);
-  const storedAmount=String(stored).match(/[\d,]+(?:\.\d+)?/g)?.at(-1)?.replaceAll(',','');
-  const contractAmount=String(fromContract).match(/[\d,]+(?:\.\d+)?/g)?.at(-1)?.replaceAll(',','');
-  return !hasFrequency && storedAmount && storedAmount===contractAmount ? fromContract : stored;
+export function preferDetailedPremium(stored,fromContract,fromAi='') {
+  if (/(每年|年交|年缴|每月|月交|一次交清|趸交)/.test(stored)) return stored;
+  const amount=(value)=>String(value || '').match(/[\d,]+(?:\.\d+)?/g)?.at(-1)?.replaceAll(',','');
+  for (const candidate of [fromAi,fromContract]) {
+    if (!candidate || !/(每年|年交|年缴|每月|月交|一次交清|趸交)/.test(candidate)) continue;
+    if (!stored || amount(stored)===amount(candidate)) return candidate;
+    const currencyParts=[...String(candidate).matchAll(/(?:RMB|人民币|[￥¥])\s*([\d,]+(?:\.\d{1,2})?)/gi)]
+      .map((match)=>Number(match[1].replaceAll(',','')));
+    const annualParts=currencyParts.length>1 ? currencyParts : [...String(candidate).matchAll(/(?:每年|年交|年缴)[^\d]{0,15}([\d,]+(?:\.\d{1,2})?)/g)]
+      .map((match)=>Number(match[1].replaceAll(',','')));
+    const storedAmount=Number(amount(stored));
+    if (annualParts.length>1 && annualParts.every(Number.isFinite) &&
+        Number.isFinite(storedAmount) && Math.abs(annualParts.reduce((sum,value)=>sum+value,0)-storedAmount)<0.01) {
+      return `每年${storedAmount.toFixed(2)}元（主附险合计）`;
+    }
+  }
+  return stored || fromAi || fromContract || '';
 }
 
 function dateText(value) {
@@ -51,43 +71,45 @@ function basicSumInsured(policy={},localFacts={}) {
   return `${amount}${label ? `（${label}）` : ''}`;
 }
 
-function normalizeBenefits(extraction) {
+export function normalizeBenefits(extraction) {
   return (Array.isArray(extraction?.benefits) ? extraction.benefits : []).map((item)=>({
     name:nonempty(item?.name),amount:nonempty(item?.amount),paymentMethod:nonempty(item?.paymentMethod),
     summary:nonempty(item?.summary),conditions:nonempty(item?.conditions),page:item?.page == null ? '' : String(item.page),
-  })).filter((item)=>item.name || item.amount || item.paymentMethod || item.summary || item.conditions);
+    scenarios:Array.isArray(item?.scenarios)?item.scenarios.filter((scenario)=>scenario?.evidenceVerified && nonempty(scenario.amount)):[],
+  })).filter((item)=>{
+    const name=item.name;
+    if (!name || /理赔申请|申请材料|申请资料|受益人指定|报案流程|索赔流程/.test(name)) return false;
+    if (/^(?:轻症疾病保险金|重大疾病保险金)[-—－：:]/.test(name)) return false;
+    if (!/保险金|给付|豁免|津贴|补偿|返还|年金|领取|报销|医疗责任|医疗费用|身故责任|祝寿金|满期金|生存金/.test(name)) return false;
+    if (/申请书|提交.*资料|证明和资料|受益人.*指定|给付情形与金额待对照原合同核对/.test(item.summary)) return false;
+    return Boolean(item.amount || item.scenarios.length || item.summary || item.paymentMethod);
+  });
 }
 
-function summarizeResponsibility(record) {
-  const extraction=record.extraction || {};
-  const benefits=record.benefits || [];
-  if (benefits.length) return benefits.map((item)=>`• ${item.main || [item.name,item.amount].filter(Boolean).join('：')}`).join('\n');
-  return record.contractFacts?.productName
-    ? '原合同保单页已识别基本信息；保障责任条款待整理。'
-    : nonempty(extraction.policy?.claimSummary || record.coverageSummary) || '';
-}
-
-function summaryChunks(value) {
-  const text=nonempty(value);
-  if (!text) return [];
-  return text.split(/[；;]\s*/).map((part)=>part.trim()).filter((part)=>part && !/申请时|申请书|提交合同|疾病定义/.test(part));
-}
-
-export function plannedRemainingPremiums(record,asOfDate) {
-  const term=nonempty(record.paymentTerm || record.extraction?.policy?.paymentTerm);
-  if (/一次交清|趸交/.test(term)) return '0期（该合同一次交清）';
-  const years=Number(term.match(/^(\d+)\s*年/)?.[1]);
-  const effective=dateText(record.effectiveDate || record.contractFacts?.effectiveDate);
-  const asOf=dateText(asOfDate);
-  if (!Number.isSafeInteger(years) || years<1 || years>100 || !/^\d{4}-\d{2}-\d{2}$/.test(effective) || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return '';
-  const startYear=Number(effective.slice(0,4));
-  const endDate=dateText(record.paymentEndDate);
-  const endYear=endDate ? Number(endDate.slice(0,4)) : startYear+years-1;
-  const dueMonthDay=record.contractFacts?.renewalDueMonthDay || effective.slice(5);
-  if (endYear<startYear || endYear>startYear+years) return '';
-  let remaining=0;
-  for (let year=startYear;year<=endYear;year++) if (`${year}-${dueMonthDay}`>asOf) remaining++;
-  return `${remaining}期（合同计划）`;
+export function combinedBenefits(local=[],extracted=[]) {
+  if (!local.length) {
+    const merged=[];
+    for (const item of extracted) {
+      const name=nonempty(item.name).replace(/\s+/g,'');
+      const existing=merged.find((candidate)=>nonempty(candidate.name).replace(/\s+/g,'')===name &&
+        (!candidate.amount || !item.amount || candidate.amount===item.amount));
+      if (!existing) { merged.push({...item,scenarios:[...(item.scenarios || [])]}); continue; }
+      for (const field of ['amount','summary','paymentMethod','conditions']) if (!existing[field] && item[field]) existing[field]=item[field];
+      for (const scenario of item.scenarios || []) if (!existing.scenarios.some((saved)=>
+        `${saved.trigger}|${saved.amount}|${saved.page}`===`${scenario.trigger}|${scenario.amount}|${scenario.page}`)) existing.scenarios.push(scenario);
+    }
+    return merged;
+  }
+  const name=(item)=>nonempty(item.name).replace(/\s+/g,'');
+  return [...local.map((item)=>{
+    const scenarios=[...(item.scenarios || [])];
+    if (!scenarios.length) for (const matching of extracted.filter((candidate)=>name(candidate)===name(item))) {
+      for (const scenario of matching.scenarios || []) if (!scenarios.some((existing)=>
+        existing.trigger===scenario.trigger && existing.amount===scenario.amount)) scenarios.push(scenario);
+    }
+    return {...item,scenarios};
+  }),...[...new Map(extracted.filter((item)=>!local.some((candidate)=>name(candidate)===name(item)))
+    .map((item)=>[`${name(item)}|${nonempty(item.amount)}`,item])).values()]];
 }
 
 function explicitAnnualPremium(value) {
@@ -112,15 +134,27 @@ function formatCoveragePeriod(record) {
   const policy=record.extraction?.policy || {};
   const effectiveDate=dateText(record.effectiveDate || policy.effectiveDate);
   const expiryDate=dateText(record.expiryDate || policy.expiryDate);
+  const contractDate=dateText(record.contractDate || record.contractFacts?.contractDate || policy.contractDate);
   const coveragePeriod=nonempty(policy.coveragePeriod || record.contractFacts?.coveragePeriod);
   if (effectiveDate && expiryDate) return `${effectiveDate} 至 ${expiryDate}`;
   if (effectiveDate && /终身|终生/.test(coveragePeriod)) return `${effectiveDate} 起，${coveragePeriod}`;
   if (effectiveDate) return `${effectiveDate} 起${coveragePeriod ? `，${coveragePeriod}` : ''}`;
   if (expiryDate) return `至 ${expiryDate}`;
+  if (contractDate) return `合同成立：${contractDate}${coveragePeriod ? `；保障期限：${coveragePeriod}` : ''}`;
   return coveragePeriod;
 }
 
+function formatPaymentTerm(record) {
+  const policy=record.extraction?.policy || {};
+  const term=nonempty(record.paymentTerm || policy.paymentTerm);
+  const endDate=dateText(record.paymentEndDate || record.contractFacts?.paymentEndDate || policy.paymentEndDate);
+  if (term && endDate) return `${term}；交费期满：${endDate}`;
+  if (endDate) return `交费期满：${endDate}`;
+  return term;
+}
+
 const COVERAGE_COLUMNS={critical:'I',life:'J',accidentAmount:'K',accidentMedical:'L',hospitalization:'M',allowance:'N',financial:'O'};
+const COVERAGE_LABELS={critical:'重疾',life:'身故责任',accidentAmount:'意外身故/伤残',accidentMedical:'意外门急诊',hospitalization:'住院医疗报销',allowance:'住院津贴',financial:'增额终身寿/年金'};
 const moneyValue=(value)=>{
   const matches=[...String(value || '').replaceAll(',','').matchAll(/(\d+(?:\.\d+)?)\s*(万元|万|元)/g)];
   if (matches.length!==1) return null;
@@ -141,10 +175,68 @@ function coverageTiming(record,asOfDate) {
   return 'current';
 }
 
+export function policyOrganizerMemberSnapshots({customer,records,preparedOn,members=null,context=null,assumeProvided=false}) {
+  const insuredNames=unique(records.map((record)=>record.insuredName));
+  const names=members ? members.map((member)=>member.displayName || member.name)
+    : unique([customer.name,...insuredNames]);
+  return names.map((name,index)=>{
+    const byStatus={current:[],pending:[],expired:[],future:[]};
+    for (const record of records) {
+      const targets=Array.isArray(record.insuredMemberNames)
+        ? record.insuredMemberNames.length===1?record.insuredMemberNames:[]
+        : [nonempty(record.insuredName)];
+      if (targets.includes(name)) byStatus[assumeProvided?'current':coverageTiming(record,preparedOn)].push(policyCoverageAmounts(record));
+    }
+    const categories=Object.fromEntries(Object.keys(COVERAGE_COLUMNS).map((category)=>[
+      category,Object.fromEntries(Object.entries(byStatus).map(([status,amounts])=>[status,{
+        count:amounts.filter((item)=>Object.hasOwn(item,category)).length,
+        amount:amounts.reduce((sum,item)=>sum+(Number.isFinite(item[category])&&item[category]>0?item[category]:0),0),
+      }])),
+    ]));
+    const member=members?.[index];
+    return {index,name,byStatus,categories,policyCount:Object.values(byStatus).reduce((sum,items)=>sum+items.length,0),
+      medicalInsuranceStatus:member?.profile?.medicalInsuranceStatus || (name===customer.name?customer.profile?.medicalInsuranceStatus:'') || 'unknown',
+      mainIncome:Boolean(member ? context?.mainIncomeMemberIds?.includes(member.id) : name===customer.name && customer.profile?.incomeResponsibility==='primary'),
+      hasDependents:Boolean(member ? context?.dependentMemberIds?.length : name===customer.name && customer.profile?.dependentCount>0),
+      debtStatus:context?.debtStatus || (name===customer.name?customer.profile?.mortgageStatus:'') || 'unknown'};
+  });
+}
+
+const DIAGNOSIS_INSTRUCTIONS=`你是保险顾问工作台的保单整理助手。根据匿名化的保单摘要，为每位被保险人写2至3条简短的中文诊断建议。返回严格 JSON：{"results":[{"index":0,"points":["已有保障概况","主要保障缺口","下一步建议"]}]}。每条尽量控制在25至55字，不加序号、不换行；第三条没有有用内容时只写两条。
+第1条概括现有保障，第2条指出最重要的保障缺口，第3条可写具体服务动作或长期资金安排。重点看住院医疗费用补偿、重疾、意外和身故兜底；主要收入者还要考虑家庭责任。增额终身寿与年金属于长期资金安排，不代替医疗或重疾保障。
+按用户约定，本次纳入的保单都作为现有配置；不要讨论核实状态、有效性、到期或续保。没有记录只说“当前保单资料未见该项保障”，不要断言客户现实中没有保障。重疾险身故与意外身故可能共用一份金额，不能相加；医疗年度限额与给付型保额也不能相加。不要照抄示例中的税优、养老金、体检或产品优劣判断；输入没有相应事实时不能写。不要推销产品、给精确投保额度或编造家庭收入、健康状况、医保状态和赔付结论。只依据输入事实，不输出姓名。`;
+
+export async function generatePolicyOrganizerDiagnoses(snapshots,callModel) {
+  const diagnoses=new Map();
+  for (let start=0;start<snapshots.length;start+=4) {
+    const group=snapshots.slice(start,start+4);
+    const input={members:group.map((snapshot)=>({index:snapshot.index,policyCount:snapshot.policyCount,
+      medicalInsuranceStatus:snapshot.medicalInsuranceStatus,mainIncome:snapshot.mainIncome,
+      hasDependents:snapshot.hasDependents,debtStatus:snapshot.debtStatus,
+      categories:Object.fromEntries(Object.entries(snapshot.categories).map(([key,statuses])=>[
+        COVERAGE_LABELS[key],statuses.current,
+      ]))}))};
+    const result=await callModel(DIAGNOSIS_INSTRUCTIONS,JSON.stringify(input),90_000,{thinking:'disabled',maxTokens:1400});
+    if (!Array.isArray(result?.results)) throw new ServiceUnavailableException('AI 未返回完整的保障诊断，请稍后重试');
+    for (const snapshot of group) {
+      const matches=result.results.filter((item)=>item?.index===snapshot.index);
+      const points=matches[0]?.points;
+      if (matches.length!==1 || !Array.isArray(points) || points.length<2 || points.length>3) {
+        throw new ServiceUnavailableException('AI 诊断结果不完整，请稍后重试');
+      }
+      if (points.some((point)=>typeof point!=='string')) throw new ServiceUnavailableException('AI 诊断内容不完整，请稍后重试');
+      const cleaned=points.map((point)=>nonempty(point).replace(/^[①②③1-3][.、．\s]*/,'').replace(/[\r\n]+/g,' ').trim());
+      if (cleaned.some((point)=>point.length<6 || point.length>100)) throw new ServiceUnavailableException('AI 诊断内容不完整，请稍后重试');
+      diagnoses.set(snapshot.name,cleaned);
+    }
+  }
+  return diagnoses;
+}
+
 // One policy contributes at most once to each column. Named sub-benefits that
 // share an annual cap or the same basic sum insured are never added together.
 export function policyCoverageAmounts(record) {
-  const product=displayProductName(record.contractFacts?.productName || record.name || record.extraction?.policy?.productName);
+  const product=displayProductName(record.name || record.extraction?.policy?.productName || record.contractFacts?.productName);
   const type=nonempty(record.insuranceType || record.extraction?.policy?.insuranceType);
   const benefits=record.benefits || [];
   const basic=moneyValue((record.basicSumInsured && typeof record.basicSumInsured==='object'
@@ -152,15 +244,19 @@ export function policyCoverageAmounts(record) {
   const medicalProduct=/医疗|住院|费用补偿/.test(`${product} ${type}`);
   const criticalProduct=/重疾|重大疾病|中症|轻症/.test(`${product} ${type}`) && !medicalProduct;
   const lifeProduct=/终身寿|定期寿|寿险/.test(`${product} ${type}`) && !criticalProduct && !medicalProduct;
+  const financialProduct=/增额.{0,8}终身寿|年金/.test(`${product} ${type}`);
   const accidentProduct=/意外(?:伤害|身故|伤残)(?:保险|险)/.test(product) && !medicalProduct;
   const result={};
 
   if (criticalProduct || benefitNamed(benefits,/^(?:轻症|中症|重疾|重大疾病).*保险金$/)) result.critical=basic;
   const death=benefitNamed(benefits,/^(?!意外)(?:身故|死亡).*保险金$/);
-  if (lifeProduct || death) result.life=basic || benefitAmount(death);
+  if (lifeProduct) result.life=basic || benefitAmount(death);
+  else if (death && !financialProduct) result.life=benefitAmount(death) || (criticalProduct ? basic : null);
   const accidentDeath=benefitNamed(benefits,/^意外(?:身故|伤残|伤害).*保险金$/);
-  const deathCoversAccident=death && /因意外|意外伤害原因/.test(nonempty(death.summary)) &&
-    !/因意外.{0,12}(?:不赔|不承担|除外)/.test(nonempty(death.summary)) &&
+  const deathEvidence=[death?.summary,death?.conditions,...(death?.scenarios || []).flatMap((scenario)=>[scenario.trigger,scenario.amount])]
+    .map(nonempty).join(' ');
+  const deathCoversAccident=death && /因意外|意外伤害原因/.test(deathEvidence) &&
+    !/因意外.{0,12}(?:不赔|不承担|除外)/.test(deathEvidence) &&
     /基本保额|基本保险金额|\d+(?:\.\d+)?\s*(?:万元|万|元)/.test(nonempty(death.amount));
   if (accidentProduct || accidentDeath || deathCoversAccident) {
     result.accidentAmount=benefitAmount(accidentDeath) || (accidentProduct ? basic : null) ||
@@ -181,7 +277,7 @@ export function policyCoverageAmounts(record) {
   }
   // Product identity, not a mention of dividends or a death benefit, decides
   // whether this is an accumulating whole-life or annuity product.
-  if (/增额.{0,8}终身寿|年金/.test(`${product} ${type}`)) result.financial=basic;
+  if (financialProduct) result.financial=basic;
   return result;
 }
 
@@ -207,11 +303,11 @@ function setMerged(sheet,range,value,options) {
   sheet.getCell(start).value=cleanText(value,4000);
 }
 
-export function buildPolicyOrganizerWorkbook({customer,records,preparedOn,members=null}) {
+export function buildPolicyOrganizerWorkbook({customer,records,preparedOn,members=null,diagnoses=null}) {
   const insuredNames=unique(records.map((record)=>record.insuredName));
   const allMemberNames=members ? members.map((member)=>member.displayName || member.name) : unique([customer.name,...insuredNames]);
-  const memberRows=members ? allMemberNames : allMemberNames.slice(0,3);
-  const overviewRows=Math.max(3,memberRows.length);
+  const memberRows=allMemberNames;
+  const overviewRows=Math.max(3,memberRows.length*(diagnoses?2:1));
   const overviewNoteRow=4+overviewRows;
   const policyHeaderRow=overviewNoteRow+1;
   const firstPolicyRow=policyHeaderRow+1;
@@ -227,6 +323,12 @@ export function buildPolicyOrganizerWorkbook({customer,records,preparedOn,member
   sheet.headerFooter.oddFooter='&L家庭保单整理&C第 &P 页，共 &N 页';
   sheet.columns=[3,12,12,14,11,12,15,12,15,16,15,16,17,16,16,17].map((width)=>({width}));
   const ink='FF24332D',teal='FF167A65',red='FFC81742',pale='FFF4E6EA',soft='FFF4F7F4',white='FFFFFFFF',muted='FF63746C';
+  const overviewStatusStyle={
+    current:{label:diagnoses?'已纳入':'已核实有效',color:teal,fill:white},
+    pending:{label:'状态待核',color:'FFAA6B17',fill:'FFFFF7E8'},
+    expired:{label:'原保期已过',color:'FF6E7772',fill:'FFF3F5F3'},
+    future:{label:'尚未生效',color:'FF477D99',fill:'FFF0F6FA'},
+  };
 
   applyMergedStyle(sheet,'A1:P1',{fill:red,fontColor:white,bold:true,size:22});
   sheet.getCell('A1').value='家庭保单整理诊断分析卡';
@@ -245,21 +347,23 @@ export function buildPolicyOrganizerWorkbook({customer,records,preparedOn,member
     if (range.includes(':')) setMerged(sheet,range,label,{fill:pale,fontColor:ink,bold:true,size:9});
     else { const cell=sheet.getCell(range);styleCell(cell,{fill:pale,fontColor:ink,bold:true,size:9});cell.value=label; }
   }
-  const amountRows=memberRows.length ? memberRows : [customer.name];
-  const amountsByMember=new Map(amountRows.map((name)=>[name,{current:[],pending:[],expired:[],future:[]}]));
-  for (const record of records) {
-    const targets=Array.isArray(record.insuredMemberNames)
-      ? record.insuredMemberNames.length===1?record.insuredMemberNames:[]
-      : [nonempty(record.insuredName)];
-    for (const target of targets) if (amountsByMember.has(target)) {
-      const timing=coverageTiming(record,preparedOn);
-      amountsByMember.get(target)[timing].push(policyCoverageAmounts(record));
-    }
-  }
+  const snapshots=policyOrganizerMemberSnapshots({customer,records,preparedOn,members,assumeProvided:Boolean(diagnoses)});
   for (let offset=0;offset<overviewRows;offset++) {
     const row=4+offset;
-    const name=amountRows[offset] || '';
-    const memberAmounts=amountsByMember.get(name) || {current:[],pending:[],expired:[],future:[]};
+    const snapshot=snapshots[diagnoses?Math.floor(offset/2):offset];
+    const isDiagnosisRow=Boolean(diagnoses && offset%2===1 && snapshot);
+    if (isDiagnosisRow) {
+      const points=diagnoses.get(snapshot.name);
+      if (!Array.isArray(points) || points.length<2) throw new ServiceUnavailableException('AI 诊断结果不完整，请稍后重试');
+      const lines=['诊断建议：',...points.map((point,index)=>`${index+1}. ${point}`)];
+      applyMergedStyle(sheet,`A${row}:P${row}`,{fill:white,fontColor:'FFD22B38',bold:true,size:11,align:'left'});
+      sheet.getCell(`A${row}`).value=cleanMultilineText(lines.join('\n'),600);
+      const visualLines=lines.reduce((total,line)=>total+Math.max(1,Math.ceil([...line].reduce((width,char)=>width+(/[\u0000-\u00ff]/.test(char)?1:2),0)/175)),0);
+      sheet.getRow(row).height=Math.min(180,Math.max(82,12+visualLines*21));
+      continue;
+    }
+    const name=snapshot?.name || '';
+    const memberAmounts=snapshot?.byStatus || {current:[],pending:[],expired:[],future:[]};
     for (const range of [`A${row}:C${row}`,`E${row}:F${row}`,`O${row}:P${row}`]) applyMergedStyle(sheet,range,{fill:white,fontColor:ink,size:9});
     for (let column=1;column<=16;column++) {
       if (sheet.getCell(row,column).isMerged) continue;
@@ -283,21 +387,33 @@ export function buildPolicyOrganizerWorkbook({customer,records,preparedOn,member
       const pending=memberAmounts.pending.filter((amounts)=>Object.hasOwn(amounts,category));
       const expired=memberAmounts.expired.filter((amounts)=>Object.hasOwn(amounts,category));
       const future=memberAmounts.future.filter((amounts)=>Object.hasOwn(amounts,category));
-      const known=entries.filter((amounts)=>Number.isFinite(amounts[category]) && amounts[category]>0);
-      const bases=new Set(known.map((amounts)=>category==='allowance' && amounts.allowanceBasis==='daily'?'daily':'total'));
-      if (known.length && bases.size===1) {
-        cell.value=known.reduce((sum,amounts)=>sum+amounts[category],0);
+      const knownByStatus={current:entries,pending,expired,future};
+      for (const status of Object.keys(knownByStatus)) knownByStatus[status]=knownByStatus[status]
+        .filter((amounts)=>Number.isFinite(amounts[category]) && amounts[category]>0);
+      const displayStatus=['current','pending','expired','future'].find((status)=>knownByStatus[status].length);
+      const displayed=displayStatus ? knownByStatus[displayStatus] : [];
+      const bases=new Set(displayed.map((amounts)=>category==='allowance' && amounts.allowanceBasis==='daily'?'daily':'total'));
+      if (displayed.length && bases.size===1) {
+        cell.value=displayed.reduce((sum,amounts)=>sum+amounts[category],0);
         const showCents=!Number.isInteger(cell.value);
         cell.numFmt=bases.has('daily')
           ? (showCents?'#,##0.00"元/日"':'#,##0"元/日"')
           : (showCents?'#,##0.00"元"':'#,##0"元"');
-        cell.font={name:'PingFang SC',size:9,bold:true,color:{argb:teal}};
+        cell.font={name:'PingFang SC',size:9,bold:true,color:{argb:overviewStatusStyle[displayStatus].color}};
+        cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:overviewStatusStyle[displayStatus].fill}};
       }
       if (entries.length || pending.length || expired.length || future.length) {
-        const notes=[`${entries.length} 份已核实且有效的合同；${known.length} 份金额可识别。`];
-        if (pending.length) notes.push(`${pending.length} 份资料或合同状态待核实，金额暂不计入；请在下方保单明细核对。`);
-        if (expired.length) notes.push(`${expired.length} 份合同已过原保期，未计入；请核对是否续保。`);
-        if (future.length) notes.push(`${future.length} 份合同尚未生效，未计入。`);
+        const notes=[displayStatus
+          ? `显示 ${knownByStatus[displayStatus].length} 份${overviewStatusStyle[displayStatus].label}的合同载明金额。`
+          : '当前相关合同未识别到可计金额。'];
+        for (const status of ['current','pending','expired','future']) {
+          if (status===displayStatus || !knownByStatus[status].length) continue;
+          const subtotal=knownByStatus[status].reduce((sum,amounts)=>sum+amounts[category],0);
+          notes.push(`另有 ${knownByStatus[status].length} 份${overviewStatusStyle[status].label}的合同，金额合计 ${subtotal.toLocaleString('zh-CN')} 元，未并入本格显示值。`);
+        }
+        if (pending.length) notes.push('待核金额不代表当前已确认有效保障；请核对合同状态、被保险人和给付条件。');
+        if (expired.length) notes.push('原保期已过的金额为历史合同载明值；请核对续保后再判断当前保障。');
+        if (future.length) notes.push('尚未生效的金额不代表当前保障。');
         if (category==='life') notes.push('本列包含重疾险附带的身故责任，并非均为独立寿险；实际身故给付可能随等待期、既往理赔等条件变化，此处仅按合同基本保额或明确金额列示。');
         if (category==='accidentAmount') notes.push('含因意外身故可给付的普通身故责任，与“寿险身价”可能是同一份保额，不可相加；有条件的额外关爱金未计入基本保额。');
         if (category==='hospitalization') notes.push('住院报销按合同年度共用上限或明确的住院医疗限额计一次，分项限额不叠加。');
@@ -309,17 +425,15 @@ export function buildPolicyOrganizerWorkbook({customer,records,preparedOn,member
     sheet.getRow(row).height=28;
   }
 
-  const overviewNote=members
-    ? '家庭成员逐人列示；只汇总已核实且确认有效的合同。多人共用限额及归属未确认的合同不计入个人金额；待核实金额见下方明细。空白不代表没有保障。'
-    : allMemberNames.length>3
-    ? '概览仅列示前 3 位被保险人；其余见保单明细。金额只计入已核实且确认有效的合同；待核实金额见下方明细，不同分类不能相加。'
-    : '金额只计入已核实且确认有效的合同；已过原保期或状态待核实的合同暂不计入。空白不代表没有保障；不同分类不能相加。';
+  const overviewNote=diagnoses
+    ? `${members?'家庭成员逐人列示；多人共用限额或归属未明确的合同不计入个人金额。':''}按本次纳入的保单列示已有配置；不同保障类别的金额不能相加，空白表示当前资料未记录。`
+    : `${members?'家庭成员逐人列示；多人共用限额或归属未确认的合同不计入个人金额。':''}绿色：已核实有效；橙色：状态待核；灰色：原保期已过；蓝色：尚未生效。只显示一种状态的金额，不跨状态或保障类别相加；空白不代表没有保障。`;
   setMerged(sheet,`A${overviewNoteRow}:P${overviewNoteRow}`,overviewNote,{fill:soft,fontColor:muted,size:9,align:'left'});
   sheet.getRow(overviewNoteRow).height=36;
 
   const policyHeaders=[
-    [`A${policyHeaderRow}:B${policyHeaderRow}`,'投保人'],[`C${policyHeaderRow}`,'被保险人'],[`D${policyHeaderRow}`,'受益人'],[`E${policyHeaderRow}:F${policyHeaderRow}`,'险种名称'],[`G${policyHeaderRow}`,'有效日期'],
-    [`H${policyHeaderRow}`,'交费期限'],[`I${policyHeaderRow}`,'计划余交期数'],[`J${policyHeaderRow}`,'保额'],[`K${policyHeaderRow}`,'保费'],[`L${policyHeaderRow}:O${policyHeaderRow}`,'保险责任'],[`P${policyHeaderRow}`,'公司'],
+    [`A${policyHeaderRow}:B${policyHeaderRow}`,'投保人'],[`C${policyHeaderRow}`,'被保险人'],[`D${policyHeaderRow}`,'受益人'],[`E${policyHeaderRow}:F${policyHeaderRow}`,'险种名称'],[`G${policyHeaderRow}`,'保险期间'],
+    [`H${policyHeaderRow}`,'交费期限'],[`I${policyHeaderRow}`,'保额'],[`J${policyHeaderRow}`,'保费'],[`K${policyHeaderRow}:O${policyHeaderRow}`,'保险责任'],[`P${policyHeaderRow}`,'公司'],
   ];
   for (const [range,label] of policyHeaders) {
     if (range.includes(':')) setMerged(sheet,range,label,{fill:red,fontColor:white,bold:true,size:10});
@@ -328,87 +442,49 @@ export function buildPolicyOrganizerWorkbook({customer,records,preparedOn,member
   sheet.getRow(policyHeaderRow).height=34;
 
   const annualValues=[];
-  let unknownAnnualPremiumCount=0;
+  let rowIndex=firstPolicyRow;
   records.forEach((record,index)=>{
-    const rowIndex=firstPolicyRow+index;
-    for (const range of [`A${rowIndex}:B${rowIndex}`,`E${rowIndex}:F${rowIndex}`,`L${rowIndex}:O${rowIndex}`]) applyMergedStyle(sheet,range,{fill:index%2?'FFF9FBF9':white,fontColor:ink,size:9,align:'left'});
+    const [responsibility]=responsibilityBlocks(record);
+    if (responsibility.text.length>32000) throw new BadRequestException('单份保单的保险责任超过 Excel 单元格可容纳的文字上限，请先精简责任描述。');
+    for (const range of [`A${rowIndex}:B${rowIndex}`,`E${rowIndex}:F${rowIndex}`,`K${rowIndex}:O${rowIndex}`]) applyMergedStyle(sheet,range,{fill:index%2?'FFF9FBF9':white,fontColor:ink,size:9,align:'left'});
     for (let column=1;column<=16;column++) {
       if (sheet.getCell(rowIndex,column).isMerged) continue;
-      styleCell(sheet.getCell(rowIndex,column),{fill:index%2?'FFF9FBF9':white,fontColor:ink,size:9,align:column===12?'left':'center'});
+      styleCell(sheet.getCell(rowIndex,column),{fill:index%2?'FFF9FBF9':white,fontColor:ink,size:9,align:column===11?'left':'center'});
     }
-    const productName=displayProductName(record.contractFacts?.productName || record.name || record.extraction?.policy?.productName || '未识别产品');
+    const productName=displayProductName(record.name || record.extraction?.policy?.productName || record.contractFacts?.productName || '未识别产品');
+    const policyNumber=nonempty(record.policyNumber || record.contractFacts?.policyNumber);
     const premium=record.premium || record.extraction?.policy?.premium || '';
     const annual=explicitAnnualPremium(premium);
-    if (annual===null) { if (premium) unknownAnnualPremiumCount++; }
-    else annualValues.push(annual);
+    if (annual!==null) annualValues.push(annual);
     const extraction=record.extraction || {};
-    const coverageAmount=record.basicSumInsured || basicSumInsured({},record.localFacts) ||
-      (extraction.policy?.basicSumInsured?.amount ? `${extraction.policy.basicSumInsured.amount}${extraction.policy.basicSumInsured.label ? `（${extraction.policy.basicSumInsured.label}）` : ''}` : '');
+    const coverageAmount=record.basicSumInsured || basicSumInsured(extraction.policy) || basicSumInsured({},record.localFacts);
     const values={
       [`A${rowIndex}`]:record.holderName || '',[`C${rowIndex}`]:record.insuredName || '',[`D${rowIndex}`]:record.beneficiary || '',
-      [`E${rowIndex}`]:productName,[`G${rowIndex}`]:formatCoveragePeriod(record),
-      [`H${rowIndex}`]:record.paymentTerm || extraction.policy?.paymentTerm || '',
-      [`I${rowIndex}`]:plannedRemainingPremiums(record,preparedOn),
-      [`J${rowIndex}`]:coverageAmount,[`K${rowIndex}`]:premium,[`L${rowIndex}`]:summarizeResponsibility(record),
-      [`P${rowIndex}`]:record.company || extraction.policy?.company || '',
+      [`E${rowIndex}`]:policyNumber?`${productName}\n合同编号：${policyNumber}`:productName,[`G${rowIndex}`]:formatCoveragePeriod(record),
+      [`H${rowIndex}`]:formatPaymentTerm(record),
+      [`I${rowIndex}`]:coverageAmount,[`J${rowIndex}`]:premium,[`K${rowIndex}`]:responsibility.text,
+      [`P${rowIndex}`]:shortCompanyName(record.company || extraction.policy?.company || ''),
     };
-    for (const [address,value] of Object.entries(values)) sheet.getCell(address).value=address.startsWith('L') ? cleanMultilineText(value) : cleanText(value,500);
-    const responsibilityLines=summarizeResponsibility(record).split('\n');
-    sheet.getRow(rowIndex).height=Math.max(58,Math.min(192,18+responsibilityLines.reduce((sum,line)=>sum+Math.max(1,Math.ceil(line.length/48))*18,0)));
-    sheet.getCell(`E${rowIndex}`).font={name:'PingFang SC',size:9,bold:true,color:{argb:record.verified?teal:'FFB26A15'}};
+    for (const [address,value] of Object.entries(values)) sheet.getCell(address).value=address.startsWith('E') || address.startsWith('K') ? cleanMultilineText(value,address.startsWith('K')?32000:4000) : cleanText(value,500);
+    sheet.getRow(rowIndex).height=Math.max(responsibility.height,policyNumber?78:0);
+    const responsibilityCell=sheet.getCell(`K${rowIndex}`);
+    responsibilityCell.font={name:'PingFang SC',size:responsibility.fontSize,color:{argb:ink}};
+    responsibilityCell.alignment={horizontal:'left',vertical:'top',wrapText:true};
+    if (responsibility.overflow) responsibilityCell.note=`保险责任已完整保存在本单元格。内容较长时，请单击单元格，在编辑栏查看全部文字。\n\n${responsibility.text}`;
+    sheet.getCell(`E${rowIndex}`).font={name:'PingFang SC',size:9,bold:true,color:{argb:diagnoses||record.verified?teal:'FFB26A15'}};
+    rowIndex++;
   });
 
-  const footerRow=firstPolicyRow+records.length;
+  const footerRow=rowIndex;
   applyMergedStyle(sheet,`A${footerRow}:D${footerRow}`,{fill:soft,fontColor:ink,bold:true,size:10});
-  applyMergedStyle(sheet,`E${footerRow}:H${footerRow}`,{fill:soft,fontColor:teal,bold:true,size:11});
-  applyMergedStyle(sheet,`I${footerRow}:P${footerRow}`,{fill:soft,fontColor:muted,size:9,align:'left'});
+  applyMergedStyle(sheet,`E${footerRow}:P${footerRow}`,{fill:soft,fontColor:teal,bold:true,size:11});
   sheet.getCell(`A${footerRow}`).value='已识别年交保费小计';
   const annualTotal=annualValues.reduce((sum,value)=>sum+value,0);
   sheet.getCell(`E${footerRow}`).value=annualValues.length ? `¥${annualTotal.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})} / 年` : '未能确认';
-  sheet.getCell(`I${footerRow}`).value=unknownAnnualPremiumCount
-    ? `只统计明确标注年交频率的保费；另有 ${unknownAnnualPremiumCount} 份频率未明，未计入。`
-    : '只统计明确标注年交频率的保费；不同缴费频率与责任金额不合并。';
   sheet.getRow(footerRow).height=36;
-  const noteRow=footerRow+1;
-  setMerged(sheet,`A${noteRow}:P${noteRow}`,records.length
-    ? `说明：本表结合客户档案、已整理结果和本机原合同。受益人以原合同保单页为准；出生日期由有效身份证号校验推得。计划余交期数按 ${preparedOn} 之后合同约定的年交日期计算，不代表实际已缴、欠费或保单仍有效；一次交清保单续保情况另核。`
-    : '当前客户尚无可导出的保单或可识别的原合同。填写和核对后的保单会显示在本表。',
-  {fill:white,fontColor:muted,size:9,align:'left'});
-  sheet.getRow(noteRow).height=38;
   sheet.autoFilter={from:`A${policyHeaderRow}`,to:`P${Math.max(policyHeaderRow,footerRow-1)}`};
-  sheet.printArea=`A1:P${noteRow}`;
+  sheet.pageSetup.printArea=`A1:P${footerRow}`;
 
-  const detail=workbook.addWorksheet('保障责任明细',{views:[{state:'frozen',ySplit:1,showGridLines:false}]});
-  detail.columns=[{width:15},{width:22},{width:22},{width:26},{width:24},{width:24},{width:54},{width:54},{width:13},{width:16}];
-  detail.pageSetup={paperSize:9,orientation:'landscape',fitToPage:true,fitToWidth:1,fitToHeight:0};
-  const detailHeaders=['被保险人','保险公司','产品名称','保障责任 / 权益','保额或限额','给付方式','责任摘要','给付条件','原PDF页码','核对状态'];
-  detailHeaders.forEach((value,index)=>{const cell=detail.getCell(1,index+1);cell.value=value;styleCell(cell,{fill:red,fontColor:white,bold:true,size:10});});
-  detail.getRow(1).height=32;
-  let detailRow=2;
-  for (const record of records) {
-    const benefits=record.benefits || [];
-    const summary=record.coverageSummary || record.extraction?.policy?.claimSummary || '';
-    const chunks=summaryChunks(summary);
-    const details=benefits.length ? benefits : chunks.length
-      ? chunks.map((part,index)=>({name:chunks.length===1?'保障责任摘要':`保障责任摘要 ${index+1}/${chunks.length}`,amount:'',paymentMethod:'',summary:part,conditions:'',page:''}))
-      : [{name:'保障责任待整理',amount:'',paymentMethod:'',summary:'原合同保单页已识别基本信息；具体保障责任仍需对照条款整理。',conditions:'',page:''}];
-    for (const item of details) {
-      const row=detail.getRow(detailRow);
-      const values=[record.insuredName,record.company || record.extraction?.policy?.company,
-        displayProductName(record.contractFacts?.productName || record.name || record.extraction?.policy?.productName),item.name,item.amount,item.paymentMethod,item.summary,item.conditions,
-        item.page ? `PDF 第 ${item.page} 页` : '',record.verified?'已核实':record.analysisStatus==='部分完成'?'整理未完成':'待核实'];
-      values.forEach((value,index)=>{row.getCell(index+1).value=cleanText(value,index===6 || index===7?2000:600);styleCell(row.getCell(index+1),{fill:detailRow%2?'FFF9FBF9':white,fontColor:ink,size:9,align:index>=6?'left':'center'});});
-      row.height=Math.max(32,Math.min(110,28+Math.ceil(Math.max(String(item.summary || '').length,String(item.conditions || '').length)/80)*14));
-      detailRow++;
-    }
-  }
-  if (detailRow===2) {
-    detail.mergeCells('A2:J2');
-    detail.getCell('A2').value='当前没有已提取的保障责任明细。';
-    styleCell(detail.getCell('A2'),{fill:white,fontColor:muted,size:10,align:'left'});
-  }
-  detail.autoFilter={from:'A1',to:`J${Math.max(1,detailRow-1)}`};
-  detail.printArea=`A1:J${Math.max(1,detailRow-1)}`;
   return {workbook,mimeType:XLSX_MIME};
 }
 
@@ -416,32 +492,42 @@ export class PolicyOrganizerExportOperations {
   async preparePolicyOrganizerData(customerIdValue) {
     const customerId=Number(customerIdValue);
     if (!Number.isSafeInteger(customerId) || customerId<=0) throw new BadRequestException('客户编号无效');
-    const [customerResult,policyResult,contractResult]=await Promise.all([
+    const [customerResult,policyResult,contractResult,profileResult]=await Promise.all([
       this.db.query('SELECT id,name,phone FROM customers WHERE id=$1',[customerId]),
-      this.db.query(`SELECT id,company,policy_name,insurance_type,holder_name,insured_name,premium,coverage_summary,
+      this.db.query(`SELECT id,company,policy_name,insurance_type,policy_number,holder_name,insured_name,premium,coverage_summary,
         basic_sum_insured,verified,contract_status,effective_date,expiry_date
         FROM policies WHERE customer_id=$1 ORDER BY created_at,id`,[customerId]),
       this.db.query(`SELECT id,policy_id,file_name,storage_name,parse_status,analysis_status,extraction_data,local_facts
         FROM customer_policy_contracts WHERE customer_id=$1 AND coverage_excluded_at IS NULL ORDER BY created_at,id`,[customerId]),
+      this.db.query('SELECT profile_data FROM customer_coverage_profiles WHERE customer_id=$1',[customerId]),
     ]);
     const customer=customerResult.rows[0];
     if (!customer) throw new NotFoundException('找不到这位客户');
+    const incompleteContracts=contractResult.rows.filter((row)=>{
+      const result=parseJson(row.extraction_data,null);
+      return !['已整理','已归档'].includes(row.analysis_status) ||
+        Number(result?.schemaVersion || 0)<10 || result?.completeness?.complete!==true;
+    });
+    if (incompleteContracts.length) throw new BadRequestException(
+      `还有 ${incompleteContracts.length} 份合同未完成最新版 AI 整理，请先逐份整理，再导出 Excel。`);
     const contracts=[];
     for (const row of contractResult.rows) {
       const extraction=parseJson(row.extraction_data,null);
       const localFacts=parseJson(row.local_facts,{});
       let contractFacts={};
+      let diseaseCounts={critical:null,light:null};
       if (row.parse_status!=='needs_ocr' && row.storage_name) {
         try {
           const evidence=await loadPolicyContractLocalEvidence({storageName:row.storage_name,fileName:row.file_name,parseStatus:row.parse_status});
           contractFacts={...evidence.facts,verifiedResponsibilities:evidence.benefits};
+          diseaseCounts=evidence.diseaseCounts;
         } catch {
           // A missing or unreadable original does not discard saved policy facts.
         }
       }
       const contract={
         id:Number(row.id),policyId:row.policy_id ? Number(row.policy_id) : null,analysisStatus:row.analysis_status,
-        extraction,localFacts,contractFacts,benefits:normalizeBenefits(extraction),
+        extraction,localFacts,contractFacts,diseaseCounts,benefits:normalizeBenefits(extraction),
       };
       contracts.push(contract);
     }
@@ -461,15 +547,18 @@ export class PolicyOrganizerExportOperations {
       const facts=contract?.contractFacts || {};
       return {
         id:Number(row.id),sourceContractIds:matching.map((item)=>item.id),company:row.company || facts.company,name:row.policy_name || facts.productName,insuranceType:row.insurance_type,
+        policyNumber:facts.policyNumber || row.policy_number || '',
         holderName:facts.holderName || row.holder_name || '',insuredName:facts.insuredName || row.insured_name || '',
         beneficiary:facts.beneficiary || '',insuredSex:facts.insuredSex || '',insuredBirthDate:facts.insuredBirthDate || '',
-        premium:preferDetailedPremium(row.premium || extraction.policy?.premium || '',facts.premium),
+        premium:preferDetailedPremium(row.premium || '',facts.premium,extraction.policy?.premium || ''),
         coverageSummary:row.coverage_summary || extraction.coverageSummary || '',
-        basicSumInsured:basicSumInsured(row,contract?.localFacts) || basicSumInsured(facts),verified:Boolean(row.verified),contractStatus:row.contract_status || 'unknown',
+        basicSumInsured:basicSumInsured(row) || basicSumInsured(extraction.policy) || basicSumInsured(facts) || basicSumInsured({},contract?.localFacts),verified:Boolean(row.verified),contractStatus:row.contract_status || 'unknown',
         effectiveDate:dateText(row.effective_date) || facts.effectiveDate || extraction.policy?.effectiveDate || '',
+        contractDate:facts.contractDate || extraction.policy?.contractDate || '',
         expiryDate:dateText(row.expiry_date) || facts.expiryDate || extraction.policy?.expiryDate || '',
-        paymentTerm:facts.paymentTerm || '',paymentEndDate:facts.paymentEndDate || '',
-        extraction,localFacts:contract?.localFacts || {},contractFacts:facts,benefits:facts.verifiedResponsibilities?.length ? facts.verifiedResponsibilities : normalizeBenefits(extraction),
+        paymentTerm:extraction.policy?.paymentTerm || facts.paymentTerm || '',paymentEndDate:extraction.policy?.paymentEndDate || facts.paymentEndDate || '',
+        extraction,localFacts:contract?.localFacts || {},contractFacts:facts,diseaseCounts:contract?.diseaseCounts,
+        benefits:combinedBenefits(facts.verifiedResponsibilities,normalizeBenefits(extraction)),
         analysisStatus:contract?.analysisStatus || '',
       };
     });
@@ -481,22 +570,34 @@ export class PolicyOrganizerExportOperations {
       const policy=extraction.policy || {};
       records.push({
         id:`contract-${contract.id}`,sourceContractIds:[contract.id],company:policy.company || facts.company || '',name:policy.productName || facts.productName || '未识别产品',
+        policyNumber:facts.policyNumber || '',
         insuranceType:policy.insuranceType || '',holderName:facts.holderName || '',insuredName:facts.insuredName || '',
         beneficiary:facts.beneficiary || '',insuredSex:facts.insuredSex || '',insuredBirthDate:facts.insuredBirthDate || '',
-        premium:preferDetailedPremium(policy.premium || '',facts.premium),coverageSummary:extraction.coverageSummary || '',
-        basicSumInsured:basicSumInsured({},contract.localFacts) || basicSumInsured(facts) ||
-          (policy.basicSumInsured?.amount ? `${policy.basicSumInsured.amount}${policy.basicSumInsured.label ? `（${policy.basicSumInsured.label}）` : ''}` : ''),
+        premium:preferDetailedPremium('',facts.premium,policy.premium || ''),coverageSummary:extraction.coverageSummary || '',
+        basicSumInsured:basicSumInsured(policy) || basicSumInsured(facts) || basicSumInsured({},contract.localFacts),
         verified:false,contractStatus:'unknown',effectiveDate:policy.effectiveDate || facts.effectiveDate || '',expiryDate:policy.expiryDate || facts.expiryDate || '',
-        paymentTerm:facts.paymentTerm || '',paymentEndDate:facts.paymentEndDate || '',
-        extraction,localFacts:contract.localFacts,contractFacts:facts,benefits:facts.verifiedResponsibilities?.length ? facts.verifiedResponsibilities : contract.benefits,analysisStatus:contract.analysisStatus,
+        contractDate:facts.contractDate || policy.contractDate || '',
+        paymentTerm:policy.paymentTerm || facts.paymentTerm || '',paymentEndDate:policy.paymentEndDate || facts.paymentEndDate || '',
+        extraction,localFacts:contract.localFacts,contractFacts:facts,diseaseCounts:contract.diseaseCounts,
+        benefits:combinedBenefits(facts.verifiedResponsibilities,contract.benefits),analysisStatus:contract.analysisStatus,
       });
     }
-    return {customer:{id:customerId,name:customer.name,phone:customer.phone || ''},records};
+    return {customer:{id:customerId,name:customer.name,phone:customer.phone || '',profile:parseJson(profileResult.rows[0]?.profile_data,{})},records};
   }
 
-  async exportPolicyOrganizer(customerIdValue) {
+  async policyOrganizerDiagnoses({customer,records,preparedOn,members=null,context=null}) {
+    if (!process.env.DEEPSEEK_API_KEY && !this.policyOrganizerDiagnosisModel) {
+      throw new ServiceUnavailableException('AI 诊断服务未配置，请先配置 DeepSeek');
+    }
+    const snapshots=policyOrganizerMemberSnapshots({customer,records,preparedOn,members,context,assumeProvided:true});
+    return generatePolicyOrganizerDiagnoses(snapshots,this.policyOrganizerDiagnosisModel || ((...args)=>this.callDeepSeekModel(...args)));
+  }
+
+  async exportPolicyOrganizer(customerIdValue,{withDiagnosis=false}={}) {
     const {customer,records}=await this.preparePolicyOrganizerData(customerIdValue);
-    const {workbook}=buildPolicyOrganizerWorkbook({customer,records,preparedOn:beijingDate()});
+    const preparedOn=beijingDate();
+    const diagnoses=withDiagnosis?await this.policyOrganizerDiagnoses({customer,records,preparedOn}):null;
+    const {workbook}=buildPolicyOrganizerWorkbook({customer,records,preparedOn,diagnoses});
     return {buffer:Buffer.from(await workbook.xlsx.writeBuffer()),mimeType:XLSX_MIME,fileName:`${filenameSafe(customer.name)}_家庭保单整理_${beijingDate()}.xlsx`};
   }
 }

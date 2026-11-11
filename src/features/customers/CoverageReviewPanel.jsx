@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Col, Collapse, Descriptions, Empty, Form, InputNumber, Modal, Row, Select, Space, Spin, Tag, Typography } from 'antd';
 import { DownloadOutlined, EditOutlined, FileSearchOutlined, PhoneOutlined } from '@ant-design/icons';
-import { buildCoverageReview, COVERAGE_CATEGORIES, COVERAGE_PROFILE_LABELS, DEFAULT_COVERAGE_PROFILE, downloadCoverageReviewHtml } from './coverage-review.js';
+import { buildCoverageReview, COVERAGE_CATEGORIES, COVERAGE_PROFILE_LABELS, DEFAULT_COVERAGE_PROFILE, downloadCoverageReviewHtml, formatDiseaseCounts } from './coverage-review.js';
 import './coverage-review.css';
 
 const {Text,Title}=Typography;
@@ -84,9 +84,8 @@ export function CoverageReviewPanel({customer,api,apiLoading,performApiAction,on
       <Text className="coverage-insured-heading">被保险人：{group.name}</Text><Collapse className="coverage-policy-detail-collapse" items={group.policies.map((policy)=>{
         const mainBenefits=policy.benefits.filter((benefit)=>benefit.kind!=='definition');
         const definitions=policy.benefits.filter((benefit)=>benefit.kind==='definition');
-        const detailCount=mainBenefits.length+definitions.length;
         const summaryItems=[policy.company,policy.premium?`保费 ${policy.premium}`:'',policy.basicSumInsured?.amount?`${policy.basicSumInsured.label || '基本保额'} ${policy.basicSumInsured.amount}`:''].filter(Boolean);
-        return {key:`${category.key}-${policy.id}`,label:<div className="coverage-policy-detail-head"><div className="coverage-policy-detail-title"><Text strong>{policy.name}</Text><Text className="coverage-policy-detail-meta">{summaryItems.join(' · ')}</Text></div><Space wrap size={[6,4]}><Text className="coverage-count">{detailCount} 项条款要点{definitions.length?` · ${definitions.length} 项疾病定义`:''}</Text><Tag color={policy.status==='current'?'green':policy.status==='review'?(policy.verified?'blue':'gold'):'default'}>{statusLabel(policy)}</Tag></Space></div>,children:<div className="coverage-policy-main">
+        return {key:`${category.key}-${policy.id}`,label:<div className="coverage-policy-detail-head"><div className="coverage-policy-detail-title"><Text strong>{policy.name}</Text><Text className="coverage-policy-detail-meta">{summaryItems.join(' · ')}</Text></div><Space wrap size={[6,4]}><Text className="coverage-count">{mainBenefits.length} 项保障责任{category.key==='critical'?` · ${formatDiseaseCounts(policy.diseaseCounts)}`:''}</Text><Tag color={policy.status==='current'?'green':policy.status==='review'?(policy.verified?'blue':'gold'):'default'}>{statusLabel(policy)}</Tag></Space></div>,children:<div className="coverage-policy-main">
             {policy.responsibilityOnly ? <div className="coverage-responsibility-note"><Tag color="blue">{RESPONSIBILITY_ONLY_LABEL[category.key] || '附带责任'}</Tag><Text>{RESPONSIBILITY_ONLY_NOTE[category.key] || '保单仍按产品类型归类；此处只展示对应合同责任。'}</Text></div> : null}
             {policy.evidenceSource==='original' ? <Text className="coverage-responsibility-source">责任依据：上传的原合同；保单效力和实际缴费仍需核对。</Text> : null}
             {!policy.responsibilityOnly && policy.basicSumInsured?.amount ? <div className="coverage-basic-sum"><strong>{policy.basicSumInsured.label || '基本保险金额'}</strong><span>{policy.basicSumInsured.amount}</span>{policy.basicSumInsured.page ? <small>原 PDF 第 {policy.basicSumInsured.page} 页</small> : null}</div> : null}
@@ -101,8 +100,8 @@ export function CoverageReviewPanel({customer,api,apiLoading,performApiAction,on
               {benefit.summary ? <small className="coverage-benefit-detail">{benefit.summary}</small> : null}
               {benefit.conditions ? <small className="coverage-benefit-detail"><b>给付条件：</b>{benefit.conditions}</small> : null}
             </div>)}</div> : null}
-            {definitions.length ? <div className="coverage-definition-summary"><Text strong>疾病定义范围 · {definitions.length} 项</Text><div className="coverage-benefit-list">{definitions.map((benefit,index)=><div className="coverage-benefit-row" key={`definition-${benefit.name}-${benefit.page}-${index}`}>
-              <span>{benefit.name || '疾病定义'}</span>{benefit.pages?.length ? <small>原 PDF 第 {benefit.pages.join('、')} 页</small> : benefit.page ? <small>原 PDF 第 {benefit.page} 页</small> : null}
+            {definitions.length ? <div className="coverage-definition-summary"><Text strong>已摘录的疾病定义</Text><div className="coverage-benefit-list">{definitions.map((benefit,index)=><div className="coverage-benefit-row" key={`definition-${benefit.name}-${benefit.page}-${index}`}>
+              <span>{benefit.name || '疾病定义'}</span>
               {benefit.summary ? <small className="coverage-benefit-detail">{benefit.summary}</small> : null}
               {benefit.conditions ? <small className="coverage-benefit-detail"><b>认定条件：</b>{benefit.conditions}</small> : null}
             </div>)}</div></div> : null}

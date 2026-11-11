@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import ExcelJS from 'exceljs';
 import { FamilyPolicyReviewOperations } from '../family-policy-review-operations.js';
 import { CustomerFollowupOperations } from '../customer-followup-operations.js';
+import { PolicyOrganizerExportOperations } from '../policy-organizer-export-operations.js';
 
 function fixture() {
   const service=new FamilyPolicyReviewOperations();
@@ -91,7 +92,7 @@ test('family workbook reuses the personal template and extraction rules for ever
   const workbook=new ExcelJS.Workbook();
   await workbook.xlsx.load(file.buffer);
   const overview=workbook.getWorksheet('家庭保单整理');
-  assert.deepEqual(workbook.worksheets.map((sheet)=>sheet.name),['家庭保单整理','保障责任明细']);
+  assert.deepEqual(workbook.worksheets.map((sheet)=>sheet.name),['家庭保单整理']);
   assert.equal(overview.getCell('A4').value,'家长');
   assert.equal(overview.getCell('A5').value,'配偶');
   assert.equal(overview.getCell('A6').value,'孩子');
@@ -99,6 +100,8 @@ test('family workbook reuses the personal template and extraction rules for ever
   assert.equal(overview.getCell('I6').value,100000);
   assert.equal(overview.getCell('I4').value,null);
   assert.equal(overview.getCell('M4').value,null); // shared medical limit cannot be assigned to one member
+  assert.equal(overview.getCell('O5').value,200000); // spouse's pending contract amount remains visible
+  assert.match(String(overview.getCell('O5').note),/状态待核/);
   assert.equal(overview.getCell('G4').value,'13800000000');
   assert.equal(overview.getCell('G5').value,'13900000000');
   assert.equal(overview.getCell('A9').value,'投保人');
@@ -107,7 +110,29 @@ test('family workbook reuses the personal template and extraction rules for ever
   assert.equal(overview.getCell('C11').value,'家长、配偶');
   assert.equal(overview.getCell('C12').value,'配偶');
   assert.equal(overview.getCell('E13').value,'¥2,500.00 / 年');
-  assert.equal(workbook.getWorksheet('保障责任明细').getCell('D2').value,'重大疾病保险金');
+  assert.match(overview.getCell('K10').value,/重大疾病保险金：基本保额10万元/);
+});
+
+test('family diagnosis export adds one AI conclusion beneath every member',async()=>{
+  const service=fixture();
+  service.policyOrganizerDiagnoses=PolicyOrganizerExportOperations.prototype.policyOrganizerDiagnoses;
+  let received='';
+  service.policyOrganizerDiagnosisModel=async(_instructions,input)=>{
+    received=input;
+    return {results:[0,1,2,3].map((index)=>({index,points:[
+      `第${index+1}位成员已有的保障按保单列示。`,
+      '当前资料未见的保障项目可结合家庭责任补充。',
+    ]}))};
+  };
+  const file=await service.exportFamilyPolicyOrganizer(1,{withDiagnosis:true});
+  const workbook=new ExcelJS.Workbook();
+  await workbook.xlsx.load(file.buffer);
+  const sheet=workbook.getWorksheet('家庭保单整理');
+  assert.deepEqual([4,6,8,10].map((row)=>sheet.getCell(`A${row}`).value),['家长','配偶','孩子','祖父']);
+  assert.ok([5,7,9,11].every((row)=>String(sheet.getCell(`A${row}`).value).startsWith('诊断建议：\n1. ')));
+  assert.equal(sheet.getCell('A13').value,'投保人');
+  assert.doesNotMatch(received,/家长|配偶|孩子|祖父|13800000000|13900000000/);
+  assert.match(received,/"hasDependents":true/);
 });
 
 test('unlinking a household source removes policy and PDF links together without deleting originals',async()=>{

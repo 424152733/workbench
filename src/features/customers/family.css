@@ -135,6 +135,11 @@
 .policy-contract-benefit > .ant-typography { overflow-wrap: anywhere; word-break: break-word; }
 .policy-contract-benefit-amount { font-weight: 600; color: #314f40; }
 .policy-contract-benefit-shared-limit { color: #2d745c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.policy-contract-scenarios { display: grid; gap: 6px; margin-top: 3px; }
+.policy-contract-scenario { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; background: #f2f7f3; overflow-wrap: anywhere; }
+.policy-contract-scenario strong { color: #244d3b; }
+.policy-contract-scenario span { font-weight: 600; color: #167a65; }
+.policy-contract-scenario small { color: #63746c; line-height: 1.45; }
 .policy-contract-claim-summary .ant-alert-description { overflow-wrap: anywhere; }
 .policy-contract-evidence { display: block; color: #718077; font-size: 12px; line-height: 1.65; }
 .policy-contract-suggestion { margin: 0; }
@@ -198,6 +203,9 @@
 :root[data-theme="dark"] .policy-contract-result-collapse { border-color: #35443b !important; background: #1b2620 !important; }
 :root[data-theme="dark"] .policy-contract-benefit-amount { color: #c8e5d0; }
 :root[data-theme="dark"] .policy-contract-benefit-shared-limit { color: #9ed5b5; }
+:root[data-theme="dark"] .policy-contract-scenario { background: #25372c; }
+:root[data-theme="dark"] .policy-contract-scenario strong,:root[data-theme="dark"] .policy-contract-scenario span { color: #b7e4c4; }
+:root[data-theme="dark"] .policy-contract-scenario small { color: #aabbb0; }
 :root[data-theme="dark"] .policy-contract-organizer .ant-checkbox-wrapper { color: #dce7df; }
 
 @media (max-width: 767px) {
